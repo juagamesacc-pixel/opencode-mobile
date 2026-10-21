@@ -121,7 +121,12 @@ export class ApiClient {
 
   // ---- server ----
   async info(): Promise<ServerInfo> {
-    return this.request<ServerInfo>('api/info', { timeoutMs: 8000 });
+    try {
+      return await this.request<ServerInfo>('api/info', { timeoutMs: 8000 });
+    } catch {
+      // v2 serves the SPA HTML at /api/info; health is the real endpoint.
+      return this.health();
+    }
   }
 
   async health(): Promise<ServerInfo> {
@@ -203,25 +208,20 @@ export class ApiClient {
   }
 
   async updateSession(id: string, input: { title?: string; archived?: boolean; time?: any }): Promise<Session> {
-    if (!this.isV2) {
-      return normalizeSessionV1(await this.request('session/' + id, {
-        method: 'PATCH', query: { directory: this.directory },
-        body: input.time !== undefined ? { title: input.title, time: input.time } : input,
-      }));
-    }
-    await this.request('api/session/' + id, {
-      method: 'PATCH',
-      body: { title: input.title, archived: input.archived },
-    });
-    return this.getSession(id);
+    // v2 has no PATCH /api/session/:id (it serves the SPA HTML); the v1 compat
+    // route handles renames on both server generations.
+    const body: any = {};
+    if (input.title !== undefined) body.title = input.title;
+    if (input.archived !== undefined) body.archived = input.archived;
+    if (input.time !== undefined) body.time = input.time;
+    return normalizeSessionV1(await this.request('session/' + id, {
+      method: 'PATCH', query: { directory: this.directory }, body,
+    }));
   }
 
   async deleteSession(id: string): Promise<void> {
-    if (!this.isV2) {
-      await this.request('session/' + id, { method: 'DELETE', query: { directory: this.directory } });
-      return;
-    }
-    await this.request('api/session/' + id, { method: 'DELETE' });
+    // v2 has no DELETE /api/session/:id; the v1 compat route works on both.
+    await this.request('session/' + id, { method: 'DELETE', query: { directory: this.directory } });
   }
 
   async messages(sessionID: string, limit = 200): Promise<ChatMessage[]> {
@@ -293,21 +293,23 @@ export class ApiClient {
       agents: input.agents?.length ? input.agents : undefined,
     };
     try {
+      // v2 requires the wrapped shape { prompt: PromptInput, delivery } — the
+      // flat shape is rejected with 400 Missing key ["prompt"].
       return await this.request('api/session/' + sessionID + '/prompt', {
         method: 'POST',
-        body: {
-          text: input.text,
-          files,
-          agents: input.agents?.length ? input.agents : undefined,
-          ...(input.delivery ? { delivery: input.delivery } : {}),
-        },
+        body: { prompt: promptInput, ...(input.delivery ? { delivery: input.delivery } : {}) },
       });
     } catch (e) {
-      // Some v2 builds wrap the prompt input: { prompt: PromptInput, delivery }.
-      if (e instanceof ApiError && e.status === 400 && /prompt/i.test(e.body)) {
+      // Some v2 builds accept the flat shape instead.
+      if (e instanceof ApiError && e.status === 400) {
         return await this.request('api/session/' + sessionID + '/prompt', {
           method: 'POST',
-          body: { prompt: promptInput, ...(input.delivery ? { delivery: input.delivery } : {}) },
+          body: {
+            text: input.text,
+            files,
+            agents: input.agents?.length ? input.agents : undefined,
+            ...(input.delivery ? { delivery: input.delivery } : {}),
+          },
         });
       }
       throw e;
@@ -352,15 +354,11 @@ export class ApiClient {
   }
 
   async fork(id: string, messageID?: string): Promise<Session> {
-    if (!this.isV2) {
-      return normalizeSessionV1(await this.request('session/' + id + '/fork', {
-        method: 'POST', query: { directory: this.directory }, body: { messageID },
-      }));
-    }
-    const res = await this.request<any>('api/session/' + id + '/fork', {
-      method: 'POST', body: { before: messageID },
-    });
-    return normalizeSessionV2(res?.data ?? res);
+    // v2 has no /api/session/:id/fork; the v1 compat route exists on both and
+    // copies history up to messageID.
+    return normalizeSessionV1(await this.request('session/' + id + '/fork', {
+      method: 'POST', query: { directory: this.directory }, body: messageID ? { messageID } : {},
+    }));
   }
 
   async revert(id: string, messageID: string, partID?: string): Promise<any> {
@@ -369,9 +367,11 @@ export class ApiClient {
         method: 'POST', query: { directory: this.directory }, body: { messageID, partID },
       });
     }
+    // v2 splits revert into stage + commit; staging alone changes nothing.
     await this.request('api/session/' + id + '/revert/stage', {
       method: 'POST', body: { messageID },
     });
+    return this.request('api/session/' + id + '/revert/commit', { method: 'POST' });
   }
 
   async unrevert(id: string): Promise<any> {
@@ -380,7 +380,8 @@ export class ApiClient {
         method: 'POST', query: { directory: this.directory },
       });
     }
-    await this.request('api/session/' + id + '/revert', { method: 'DELETE' });
+    // clear cancels a staged (not yet committed) revert.
+    return this.request('api/session/' + id + '/revert/clear', { method: 'POST' });
   }
 
   async summarize(id: string, model?: ModelRef): Promise<any> {
@@ -398,8 +399,12 @@ export class ApiClient {
   // ---- prompts / inbox ----
   async inbox(sessionID: string): Promise<InboxItem[]> {
     if (!this.isV2) return [];
-    const res = await this.request<any>('api/session/' + sessionID + '/inbox');
-    return res?.data ?? res?.items ?? [];
+    try {
+      const res = await this.request<any>('api/session/' + sessionID + '/inbox');
+      return res?.data ?? res?.items ?? [];
+    } catch {
+      return []; // route absent on some v2 builds; queued prompts still deliver
+    }
   }
 
   async inboxMove(sessionID: string, itemID: string, action: 'queue' | 'steer'): Promise<void> {
@@ -474,8 +479,12 @@ export class ApiClient {
     if (!this.isV2) {
       return (await this.request<any[]>('mcp', { query: { directory: this.directory } })) || [];
     }
-    const res = await this.request<any>('api/mcp', { query: { 'location[directory]': this.directory } });
-    return res?.data ?? res?.items ?? res ?? [];
+    try {
+      const res = await this.request<any>('api/mcp', { query: { 'location[directory]': this.directory } });
+      return res?.data ?? res?.items ?? res ?? [];
+    } catch {
+      return []; // route absent on some v2 builds
+    }
   }
 
   // ---- project / fs ----
@@ -555,19 +564,22 @@ export class ApiClient {
   }
 
   async vcsDiff(mode?: string, context?: number): Promise<FileDiff[]> {
+    // The diff API only accepts mode "git" | "branch"; UI modes like "working"
+    // map to "git" (working-tree diff).
+    const m = mode === 'branch' ? 'branch' : 'git';
     if (!this.isV2) {
       return (await this.request<FileDiff[]>('vcs/diff', {
-        query: { directory: this.directory, mode, context },
+        query: { directory: this.directory, mode: m, context },
       })) || [];
     }
     try {
       const res = await this.request<any>('api/vcs/diff', {
-        query: { 'location[directory]': this.directory, mode, context },
+        query: { 'location[directory]': this.directory, mode: m, context },
       });
       return res?.data ?? res?.items ?? res ?? [];
     } catch {
       return (await this.request<FileDiff[]>('vcs/diff', {
-        query: { directory: this.directory, mode, context },
+        query: { directory: this.directory, mode: m, context },
       })) || [];
     }
   }
@@ -681,8 +693,12 @@ export class ApiClient {
 
   async forms(): Promise<FormInfo[]> {
     if (!this.isV2) return [];
-    const res = await this.request<any>('api/form', { query: { 'location[directory]': this.directory } });
-    return res?.data ?? res?.items ?? res ?? [];
+    try {
+      const res = await this.request<any>('api/form/request', { query: { 'location[directory]': this.directory } });
+      return res?.data ?? res?.items ?? res ?? [];
+    } catch {
+      return []; // route absent on some v2 builds
+    }
   }
 
   async replyForm(sessionID: string, formID: string, answers: Record<string, any>): Promise<void> {
@@ -729,10 +745,17 @@ export class ApiClient {
 
   async ptyTicket(id: string): Promise<string | null> {
     if (!this.isV2) return null;
-    const res = await this.request<any>('api/pty/' + id + '/connect-token', {
-      method: 'POST', query: { 'location[directory]': this.directory },
-    });
-    return res?.data?.ticket ?? res?.ticket ?? null;
+    // Some v2 builds reject token requests outright (403); the WS connect
+    // endpoint accepts Basic auth / auth_token directly, so a ticket is
+    // optional — never let this throw.
+    try {
+      const res = await this.request<any>('api/pty/' + id + '/connect-token', {
+        method: 'POST', query: { 'location[directory]': this.directory },
+      });
+      return res?.data?.ticket ?? res?.ticket ?? null;
+    } catch {
+      return null;
+    }
   }
 
   ptySocketUrl(id: string, cursor = '0', ticket?: string | null): { url: string; headers: Record<string, string> } {
@@ -748,7 +771,9 @@ export class ApiClient {
     let headers: Record<string, string> = {};
     if (this.profile.password) {
       const token = encodeBase64(`${this.profile.username || 'opencode'}:${this.profile.password}`);
-      if (!this.isV2) params.set('auth_token', token);
+      // The original client passes auth_token as a query param on both server
+      // generations (WS handshakes cannot always set headers).
+      params.set('auth_token', token);
       headers = { Authorization: `Basic ${token}` };
     }
     return {
