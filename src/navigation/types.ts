@@ -1,0 +1,23 @@
+export type RootStackParamList = {
+  Onboarding: undefined;
+  ServerSetup: { mode?: 'add' | 'edit'; id?: string; pair?: boolean; pairUrl?: string; pairUser?: string; pairPass?: string } | undefined;
+  PairQR: undefined;
+  Home: undefined;
+  Chat: { sessionId: string; title?: string; directory?: string; parentId?: string | null };
+  Changes: { sessionId: string; directory?: string; messageId?: string };
+  FileViewer: { path: string; directory?: string; sessionId?: string };
+  Terminals: { directory?: string } | undefined;
+  Terminal: { ptyId: string; title?: string; directory?: string };
+  Settings: undefined;
+  Appearance: undefined;
+  ThemePicker: undefined;
+  SyntaxPicker: undefined;
+  Servers: undefined;
+  Diagnostics: undefined;
+  FeatureFlags: undefined;
+  TextMateLanguages: undefined;
+  TextMateLogbook: undefined;
+  AddProject: { startPath?: string } | undefined;
+  Gallery: undefined;
+  About: undefined;
+};

@@ -1,0 +1,56 @@
+name: Build Android APK (arm64-v8a)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate native Android project (CNG)
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build release APK (arm64-v8a only)
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false
+        run: |
+          cd android
+          ./gradlew assembleRelease \
+            -PreactNativeArchitectures=arm64-v8a \
+            --no-daemon --stacktrace
+
+      - name: Verify APK ABI
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          test -f "$APK"
+          unzip -l "$APK" | grep -E "lib/arm64-v8a/" || echo "no native libs bundled (JS-only APK)"
+          if unzip -l "$APK" | grep -E "lib/(armeabi|x86|mips)"; then
+            echo "::error::non-arm64 ABIs found in APK"; exit 1
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-mobile-arm64-v8a
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
