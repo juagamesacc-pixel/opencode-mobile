@@ -28,6 +28,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "./plugins/withCleartextTraffic",
       "expo-secure-store",
       "expo-sharing",
       "expo-font",
