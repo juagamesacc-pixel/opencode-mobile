@@ -220,8 +220,10 @@ export function ChatScreen({ navigation, route }: Props) {
         if (sess.raw?.model) {
           const rawModel = sess.raw.model as any;
           const m: ModelRef = { providerID: rawModel.providerID, modelID: rawModel.modelID || rawModel.id, variant: rawModel.variant };
-          setSelectedModel((prev) => prev || m);
-          setSelectedVariant((prev) => prev || m.variant || null);
+          // Server state is authoritative: if the session's actual model differs
+          // from the label (e.g. a switch that failed), the label must follow it.
+          setSelectedModel((prev) => (prev && prev.providerID === m.providerID && prev.modelID === m.modelID ? prev : m));
+          setSelectedVariant((prev) => (prev === (m.variant || null) ? prev : (m.variant || null)));
         }
         if (sess.raw?.agent) setSelectedAgent((prev) => prev || sess.raw.agent);
       }
@@ -530,9 +532,17 @@ export function ChatScreen({ navigation, route }: Props) {
     try {
       if (client.isV2) {
         const selections: Promise<any>[] = [];
-        if (promptModel) selections.push(client.selectModel(sessionId, promptModel));
-        if (selectedAgent) selections.push(client.selectAgent(sessionId, selectedAgent));
-        await Promise.all(selections).catch(() => {});
+        let modelErr: unknown = null;
+        if (promptModel) selections.push(client.selectModel(sessionId, promptModel).catch((e) => { modelErr = e; }));
+        if (selectedAgent) selections.push(client.selectAgent(sessionId, selectedAgent).catch((e) => {
+          logDiag('warn', 'agent', e instanceof Error ? e.message : String(e));
+        }));
+        await Promise.all(selections);
+        if (modelErr) {
+          const msg = modelErr instanceof Error ? modelErr.message : String(modelErr);
+          setError(`Could not switch model: ${msg}`);
+          logDiag('error', 'model', msg);
+        }
       }
       await client.prompt(sessionId, {
         text,
@@ -1005,7 +1015,20 @@ export function ChatScreen({ navigation, route }: Props) {
           {models.filter((m) => `${m.name || ''} ${m.providerID} ${m.modelID}`.toLowerCase().includes(modelFilter.toLowerCase())).map((m) => {
             const on = m.providerID === selectedModel?.providerID && m.modelID === selectedModel?.modelID;
             return (
-              <Pressable key={`${m.providerID}/${m.modelID}`} onPress={() => { setSelectedModel({ providerID: m.providerID, modelID: m.modelID }); setSelectedVariant(null); if (client?.isV2) client.selectModel(sessionId, { providerID: m.providerID, modelID: m.modelID }).catch(() => {}); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.borderWeaker }}>
+              <Pressable key={`${m.providerID}/${m.modelID}`} onPress={() => {
+                setSelectedModel({ providerID: m.providerID, modelID: m.modelID });
+                setSelectedVariant(null);
+                if (client?.isV2) {
+                  client.selectModel(sessionId, { providerID: m.providerID, modelID: m.modelID })
+                    .then(() => refresh())
+                    .catch((e) => {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      setError(`Could not switch model: ${msg}`);
+                      logDiag('error', 'model', msg);
+                      refresh();
+                    });
+                }
+              }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.borderWeaker }}>
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: on ? c.textInteractive : c.text, fontSize: 14, fontWeight: on ? '600' : '400' }}>{m.name || m.modelID}</Text>
                   <Text style={{ color: c.textWeak, fontSize: 11, marginTop: 1 }}>{m.providerID}{m.context ? ` · ${formatTokens(m.context)} context` : ''}</Text>

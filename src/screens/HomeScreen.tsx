@@ -87,6 +87,14 @@ export function HomeScreen({ navigation }: Props) {
       setByDir(next);
       cacheSessions(active.id, next);
       logDiag('info', 'home', `loaded ${Object.values(next).flat().length} sessions`);
+      // Discover projects from the sessions themselves: api/location only
+      // reports the server's default directory, so projects could otherwise
+      // stay empty even though sessions exist.
+      const discovered = new Set<string>();
+      for (const list of Object.values(next)) {
+        for (const s of list) if ((s as any).directory) discovered.add((s as any).directory);
+      }
+      for (const d of discovered) if (!directories.includes(d)) addDirectory(d);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -95,7 +103,7 @@ export function HomeScreen({ navigation }: Props) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [active, dirs, byDir, logDiag]);
+  }, [active, dirs, byDir, directories, addDirectory, logDiag]);
 
   useEffect(() => { load(); }, [active?.id, selected, directories.join('|')]);
 

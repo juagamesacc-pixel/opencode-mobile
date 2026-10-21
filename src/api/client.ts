@@ -142,17 +142,31 @@ export class ApiClient {
       const list = await this.request<any[]>('session', { query: { directory: dir } });
       return (list || []).map(normalizeSessionV1);
     }
+    const fetchPage = async (queryDir?: string): Promise<Session[]> => {
+      const out: Session[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        const res = await this.request<any>('api/session', {
+          query: { directory: queryDir, cursor, parentID: undefined },
+        });
+        const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.sessions ?? [];
+        out.push(...items.map(normalizeSessionV2));
+        const next = res?.cursor?.next ?? res?.nextCursor;
+        cursor = typeof next === 'string' ? next : undefined;
+        if (!cursor) break;
+      }
+      return out;
+    };
+    // The directory-scoped endpoint returns [] for unknown/stale paths instead
+    // of an error, which would blank the whole list. Always fetch the global
+    // list (all locations) and filter client-side for the requested directory.
+    const global = await fetchPage(undefined);
+    if (!dir) return global;
+    const scoped = await fetchPage(dir).catch(() => [] as Session[]);
+    const seen = new Set<string>();
     const out: Session[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const res = await this.request<any>('api/session', {
-        query: { directory: dir, cursor, parentID: undefined },
-      });
-      const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.sessions ?? [];
-      out.push(...items.map(normalizeSessionV2));
-      const next = res?.cursor?.next ?? res?.nextCursor;
-      cursor = typeof next === 'string' ? next : undefined;
-      if (!cursor) break;
+    for (const s of [...scoped, ...global.filter((x) => x.directory === dir)]) {
+      if (s.id && !seen.has(s.id)) { seen.add(s.id); out.push(s); }
     }
     return out;
   }
@@ -213,15 +227,36 @@ export class ApiClient {
   async messages(sessionID: string, limit = 200): Promise<ChatMessage[]> {
     if (!this.isV2) {
       const list = await this.request<any[]>('session/' + sessionID + '/message', {
-        query: { directory: this.directory, limit },
+        query: { directory: this.directory, limit: Math.max(limit, 1000) },
       });
-      return (list || []).map((m) => normalizeMessageV1(m, sessionID));
+      return (list || []).map((m) => normalizeMessageV1(m, sessionID))
+        .sort((a, b) => (a.created || 0) - (b.created || 0));
     }
-    const res = await this.request<any>('api/session/' + sessionID + '/message', {
-      query: { limit, order: 'desc' },
-    });
-    const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.messages ?? [];
-    return items.map((m: any) => normalizeMessageV2(m, sessionID)).reverse();
+    // v2 /api/session/:id/message only serves messages stored in the new format;
+    // sessions created before the storage migration are readable only through
+    // the v1 endpoint (and new-format sessions return [] on v1). Fetch both and
+    // merge so history always loads regardless of which storage a session uses.
+    const [v2res, v1res] = await Promise.allSettled([
+      this.request<any>('api/session/' + sessionID + '/message', { query: { limit, order: 'desc' } }),
+      this.request<any[]>('session/' + sessionID + '/message', {
+        query: { directory: this.directory, limit: 1000 },
+      }),
+    ]);
+    if (v2res.status === 'rejected' && v1res.status === 'rejected') throw v2res.reason;
+    const v2items = v2res.status === 'fulfilled'
+      ? (Array.isArray(v2res.value) ? v2res.value : v2res.value?.data ?? v2res.value?.items ?? v2res.value?.messages ?? [])
+      : [];
+    const v1items = v1res.status === 'fulfilled' ? (Array.isArray(v1res.value) ? v1res.value : []) : [];
+    const merged = new Map<string, ChatMessage>();
+    for (const m of v2items) {
+      const n = normalizeMessageV2(m, sessionID);
+      if (n.id) merged.set(n.id, n);
+    }
+    for (const m of v1items) {
+      const n = normalizeMessageV1(m, sessionID);
+      if (n.id && !merged.has(n.id)) merged.set(n.id, n);
+    }
+    return [...merged.values()].sort((a, b) => (a.created || 0) - (b.created || 0));
   }
 
   async prompt(sessionID: string, input: {
@@ -300,6 +335,20 @@ export class ApiClient {
       method: 'POST',
       body: { model: { id: model.modelID, providerID: model.providerID, ...(model.variant ? { variant: model.variant } : {}) } },
     });
+    // The prompt endpoint ignores per-prompt model fields on v2 servers — the
+    // session model is the only thing that counts. Verify the POST actually
+    // applied it so the UI never shows a model the server is not using.
+    try {
+      const sess = await this.getSession(sessionID);
+      const m: any = sess?.raw?.model ?? (sess as any)?.model;
+      const applied = m && (m.modelID || m.id) === model.modelID && m.providerID === model.providerID;
+      if (!applied) {
+        throw new Error(`Server did not switch model (still ${m?.providerID || '?'}/${m?.id || m?.modelID || '?'})`);
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('Server did not switch')) throw e;
+      // Verification lookup itself failed — don't mask a successful POST.
+    }
   }
 
   async fork(id: string, messageID?: string): Promise<Session> {
