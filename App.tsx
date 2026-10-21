@@ -7,6 +7,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { SettingsProvider, useSettings } from './src/state/settings';
 import { ServersProvider } from './src/state/servers';
+import { DialogHost } from './src/components/dialog';
 import { RootNavigator } from './src/navigation/RootNavigator';
 
 function ThemedStatusBar() {
@@ -22,6 +23,9 @@ export default function App() {
           <ServersProvider>
             <RootNavigator />
             <ThemedStatusBar />
+            {/* Themed replacement for the system Alert dialogs, mounted once
+                under the theme context so appAlert() is theme-aware. */}
+            <DialogHost />
           </ServersProvider>
         </SettingsProvider>
       </SafeAreaProvider>

@@ -1,6 +1,7 @@
+import { appAlert } from '../components/dialog';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View,
+  FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
@@ -184,7 +185,7 @@ export function HomeScreen({ navigation }: Props) {
       navigation.navigate('Chat', { sessionId: session.id, title: session.title, directory: dir });
       load();
     } catch (e) {
-      Alert.alert('Could not create session', e instanceof Error ? e.message : String(e));
+      appAlert('Could not create session', e instanceof Error ? e.message : String(e));
     } finally {
       setCreating(false);
     }
@@ -198,7 +199,7 @@ export function HomeScreen({ navigation }: Props) {
       setMenuSession(null);
       load();
     } catch (e) {
-      Alert.alert('Rename failed!', e instanceof Error ? e.message : String(e));
+      appAlert('Rename failed!', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -209,7 +210,7 @@ export function HomeScreen({ navigation }: Props) {
       setMenuSession(null);
       navigation.navigate('Chat', { sessionId: s.id, title: s.title, directory: menuSession.directory || (menuSession as any)._dir });
     } catch (e) {
-      Alert.alert('Fork failed', e instanceof Error ? e.message : String(e));
+      appAlert('Fork failed', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -220,14 +221,14 @@ export function HomeScreen({ navigation }: Props) {
       setMenuSession(null);
       load();
     } catch (e) {
-      Alert.alert('Archive failed', e instanceof Error ? e.message : String(e));
+      appAlert('Archive failed', e instanceof Error ? e.message : String(e));
     }
   };
 
   const doDelete = () => {
     if (!active || !menuSession) return;
     const target = menuSession;
-    Alert.alert('Delete session?', `“${target.title}” will be removed from the server.`, [
+    appAlert('Delete session?', `“${target.title}” will be removed from the server.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
@@ -236,7 +237,7 @@ export function HomeScreen({ navigation }: Props) {
             setMenuSession(null);
             load();
           } catch (e) {
-            Alert.alert('Delete failed', e instanceof Error ? e.message : String(e));
+            appAlert('Delete failed', e instanceof Error ? e.message : String(e));
           }
         },
       },
@@ -283,7 +284,7 @@ export function HomeScreen({ navigation }: Props) {
               <Pressable
                 key={dir}
                 onPress={() => setSelected(dir)}
-                onLongPress={() => Alert.alert('Remove from home?', dir, [
+                onLongPress={() => appAlert('Remove from home?', dir, [
                   { text: 'Cancel', style: 'cancel' },
                   { text: 'Remove', style: 'destructive', onPress: () => { removeDirectory(dir); if (selected === dir) setSelected('all'); } },
                 ])}

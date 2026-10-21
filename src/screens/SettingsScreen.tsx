@@ -1,5 +1,6 @@
+import { appAlert } from '../components/dialog';
 import React from 'react';
-import { Alert, ScrollView, Text } from 'react-native';
+import { ScrollView, Text } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import { useSettings } from '../state/settings';
@@ -19,7 +20,7 @@ export function SettingsScreen({ navigation }: Props) {
   const syntaxName = SYNTAX_MANIFEST.find((s) => s.id === settings.selectedSyntaxID)?.name || settings.selectedSyntaxID;
 
   const resetAll = () => {
-    Alert.alert('Reset all settings?', 'Appearance, chat and developer preferences return to their defaults. Server connections are kept.', [
+    appAlert('Reset all settings?', 'Appearance, chat and developer preferences return to their defaults. Server connections are kept.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Reset', style: 'destructive', onPress: () => reset() },
     ]);

@@ -1,5 +1,6 @@
+import { appAlert } from '../components/dialog';
 import React, { useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
@@ -23,17 +24,17 @@ export function ServersScreen({ navigation }: Props) {
     // refreshActive()'s activeId closure still points at the previous server.
     const updated = await refreshActive(server.id);
     setBusy(null);
-    if (updated) Alert.alert('Connected', `${updated.name}\n${updated.baseUrl}\nProtocol ${updated.protocol.toUpperCase()}`);
-    else Alert.alert('Connection failed', 'The server did not answer the health check. Check the URL and credentials.');
+    if (updated) appAlert('Connected', `${updated.name}\n${updated.baseUrl}\nProtocol ${updated.protocol.toUpperCase()}`);
+    else appAlert('Connection failed', 'The server did not answer the health check. Check the URL and credentials.');
   };
 
   const confirmRemove = (server: ServerProfile) => {
-    Alert.alert('Remove server?', `${server.name}\n${server.baseUrl}\n\nIts saved password and project list will be removed from this phone.`, [
+    appAlert('Remove server?', `${server.name}\n${server.baseUrl}\n\nIts saved password and project list will be removed from this phone.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Remove', style: 'destructive', onPress: async () => {
           try { await removeServer(server.id); }
-          catch (e) { Alert.alert('Could not remove server', e instanceof Error ? e.message : String(e)); }
+          catch (e) { appAlert('Could not remove server', e instanceof Error ? e.message : String(e)); }
         },
       },
     ]);

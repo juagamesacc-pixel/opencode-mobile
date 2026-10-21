@@ -1,6 +1,7 @@
+import { appAlert } from '../components/dialog';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform, Pressable,
+  ActivityIndicator, FlatList, KeyboardAvoidingView, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -603,7 +604,7 @@ export function ChatScreen({ navigation, route }: Props) {
       await client.abort(sessionId);
       setStreaming(false);
     } catch (e) {
-      Alert.alert('Abort failed', e instanceof Error ? e.message : String(e));
+      appAlert('Abort failed', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -627,7 +628,7 @@ export function ChatScreen({ navigation, route }: Props) {
       }
       setAttachments((prev) => [...prev, ...next]);
     } catch (e) {
-      Alert.alert('Could not attach file', e instanceof Error ? e.message : String(e));
+      appAlert('Could not attach file', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -638,7 +639,7 @@ export function ChatScreen({ navigation, route }: Props) {
       await client.replyPermission(permission.sessionID || sessionId, permission.id, response);
       setPermission(null);
     } catch (e) {
-      Alert.alert('Permission failed', e instanceof Error ? e.message : String(e));
+      appAlert('Permission failed', e instanceof Error ? e.message : String(e));
     } finally {
       setPermissionBusy(false);
     }
@@ -660,7 +661,7 @@ export function ChatScreen({ navigation, route }: Props) {
       await client.replyQuestion(question.sessionID || sessionId, question.id, all);
       setQuestion(null); setQuestionIndex(0); setAnswers([]); setCustom(''); setCustomOn(false);
     } catch (e) {
-      Alert.alert('Could not reply', e instanceof Error ? e.message : String(e));
+      appAlert('Could not reply', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -690,7 +691,7 @@ export function ChatScreen({ navigation, route }: Props) {
   };
 
   const revert = (m: ChatMessage) => {
-    Alert.alert('Revert to here?', 'The session is rolled back to before this message. The message text returns to the input so you can edit it, discard it, or send it again.', [
+    appAlert('Revert to here?', 'The session is rolled back to before this message. The message text returns to the input so you can edit it, discard it, or send it again.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Revert', style: 'destructive', onPress: async () => {
@@ -702,7 +703,7 @@ export function ChatScreen({ navigation, route }: Props) {
             const text = m.parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n\n').trim();
             if (text) setComposer(text);
             refresh();
-          } catch (e) { Alert.alert('Revert failed', e instanceof Error ? e.message : String(e)); }
+          } catch (e) { appAlert('Revert failed', e instanceof Error ? e.message : String(e)); }
         },
       },
     ]);
@@ -715,7 +716,7 @@ export function ChatScreen({ navigation, route }: Props) {
       setPicker(null);
       navigation.push('Chat', { sessionId: s.id, title: s.title, directory });
     } catch (e) {
-      Alert.alert('Fork failed', e instanceof Error ? e.message : String(e));
+      appAlert('Fork failed', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -727,18 +728,18 @@ export function ChatScreen({ navigation, route }: Props) {
       navigation.setParams({ title: renameText.trim() });
       setPicker(null);
     } catch (e) {
-      Alert.alert('Rename failed!', e instanceof Error ? e.message : String(e));
+      appAlert('Rename failed!', e instanceof Error ? e.message : String(e));
     }
   };
 
   const del = () => {
-    Alert.alert('Delete session?', 'This removes the session and its messages from the server.', [
+    appAlert('Delete session?', 'This removes the session and its messages from the server.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
           if (!client) return;
           try { await client.deleteSession(sessionId); navigation.popToTop(); }
-          catch (e) { Alert.alert('Delete failed', e instanceof Error ? e.message : String(e)); }
+          catch (e) { appAlert('Delete failed', e instanceof Error ? e.message : String(e)); }
         },
       },
     ]);
@@ -1004,7 +1005,7 @@ export function ChatScreen({ navigation, route }: Props) {
               <Button label="Reject" variant="secondary" onPress={async () => {
                 if (!client || !question) return;
                 try { await client.rejectQuestion(question.sessionID || sessionId, question.id); setQuestion(null); }
-                catch (e) { Alert.alert('Could not reject', e instanceof Error ? e.message : String(e)); }
+                catch (e) { appAlert('Could not reject', e instanceof Error ? e.message : String(e)); }
               }} style={{ flex: 1 }} />
               {questionIndex < (question.questions?.length || 1) - 1 ? (
                 <Button label="Next" variant="primary" onPress={() => { setQuestionIndex((i) => i + 1); setCustom(''); setCustomOn(false); }} style={{ flex: 1 }} />
@@ -1022,7 +1023,7 @@ export function ChatScreen({ navigation, route }: Props) {
           try {
             await client.replyForm(form.sessionID || sessionId, form.id, answersMap);
             setForm(null);
-          } catch (e) { Alert.alert('Could not submit form', e instanceof Error ? e.message : String(e)); }
+          } catch (e) { appAlert('Could not submit form', e instanceof Error ? e.message : String(e)); }
         }} /> : null}
       </Sheet>
 
@@ -1035,8 +1036,8 @@ export function ChatScreen({ navigation, route }: Props) {
         <MenuItem icon="archive-outline" label="Compact context" onPress={async () => {
           if (!client) return;
           setPicker(null);
-          try { await client.compact(sessionId); Alert.alert('Compaction started', 'The session context is being compacted.'); }
-          catch (e) { Alert.alert('Compact failed', e instanceof Error ? e.message : String(e)); }
+          try { await client.compact(sessionId); appAlert('Compaction started', 'The session context is being compacted.'); }
+          catch (e) { appAlert('Compact failed', e instanceof Error ? e.message : String(e)); }
         }} />
         <MenuItem icon="trash-outline" label="Delete session" danger onPress={() => { setPicker(null); del(); }} />
       </Sheet>

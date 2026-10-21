@@ -1,5 +1,6 @@
+import { appAlert } from '../components/dialog';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
@@ -48,12 +49,12 @@ export function TerminalsScreen({ navigation, route }: Props) {
       setPtys((prev) => [pty, ...prev]);
       navigation.navigate('Terminal', { ptyId: pty.id, title: pty.title, directory });
     } catch (e) {
-      Alert.alert('Could not open terminal', e instanceof Error ? e.message : String(e));
+      appAlert('Could not open terminal', e instanceof Error ? e.message : String(e));
     } finally { setCreating(false); }
   };
 
   const remove = (pty: Pty) => {
-    Alert.alert('Close terminal?', 'The shell process will be stopped on the server.', [
+    appAlert('Close terminal?', 'The shell process will be stopped on the server.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Close', style: 'destructive', onPress: async () => {
@@ -62,7 +63,7 @@ export function TerminalsScreen({ navigation, route }: Props) {
             await new ApiClient(active, directory).removePty(pty.id);
             setPtys((prev) => prev.filter((p) => p.id !== pty.id));
           } catch (e) {
-            Alert.alert('Could not close terminal', e instanceof Error ? e.message : String(e));
+            appAlert('Could not close terminal', e instanceof Error ? e.message : String(e));
           }
         },
       },

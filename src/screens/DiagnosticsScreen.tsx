@@ -1,5 +1,6 @@
+import { appAlert } from '../components/dialog';
 import React from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -26,7 +27,7 @@ export function DiagnosticsScreen({ navigation }: Props) {
     ].join('\n');
     await Clipboard.setStringAsync(text);
     logDiag('info', 'diagnostics', 'Copied diagnostics to clipboard');
-    Alert.alert('Copied', 'The diagnostics log was copied to the clipboard.');
+    appAlert('Copied', 'The diagnostics log was copied to the clipboard.');
   };
 
   return (
@@ -39,7 +40,7 @@ export function DiagnosticsScreen({ navigation }: Props) {
           <>
             <Pressable onPress={copy} hitSlop={10} style={styles.icon}><Ionicons name="copy-outline" size={19} color={theme.colors.iconStrong} /></Pressable>
             <Pressable
-              onPress={() => Alert.alert('Clear diagnostics?', 'This cannot be undone.', [
+              onPress={() => appAlert('Clear diagnostics?', 'This cannot be undone.', [
                 { text: 'Cancel', style: 'cancel' },
                 { text: 'Clear', style: 'destructive', onPress: clearDiagnostics },
               ])}

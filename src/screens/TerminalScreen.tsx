@@ -1,5 +1,6 @@
+import { appAlert } from '../components/dialog';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -143,7 +144,7 @@ export function TerminalScreen({ navigation, route }: Props) {
   };
 
   const kill = () => {
-    Alert.alert('Close terminal?', 'The shell process will be stopped on the server.', [
+    appAlert('Close terminal?', 'The shell process will be stopped on the server.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Close', style: 'destructive', onPress: async () => {
