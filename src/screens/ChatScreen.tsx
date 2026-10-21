@@ -56,6 +56,33 @@ function flattenModels(providers: any[]): ChatModel[] {
   return out;
 }
 
+// Union of the live surface and a freshly fetched server listing, keyed by
+// message id (server wins for known ids, but keeps streamed parts when the
+// listing carries none). The just-sent optimistic `local-…` user message is
+// replaced by its server twin as soon as the listing contains a user message
+// with the same text — otherwise both copies stay until it appears.
+function mergeMessages(prev: ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  const localText = new Set(
+    prev.filter((m) => m.id.startsWith('local-') && m.role === 'user')
+      .map((m) => m.parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n')),
+  );
+  const map = new Map<string, ChatMessage>();
+  for (const m of prev) map.set(m.id, m);
+  for (const m of next) {
+    if (!m.id) continue;
+    if (m.role === 'user' && localText.has(m.parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n'))) {
+      for (const [id, p] of map) {
+        if (id.startsWith('local-') && p.role === 'user' && p.parts.filter((x) => x.type === 'text').map((x) => x.text || '').join('\n') === m.parts.filter((x) => x.type === 'text').map((x) => x.text || '').join('\n')) {
+          map.delete(id);
+        }
+      }
+    }
+    const existing = map.get(m.id);
+    map.set(m.id, existing ? { ...existing, ...m, parts: m.parts.length ? m.parts : existing.parts } : m);
+  }
+  return [...map.values()].sort((a, b) => (a.created || 0) - (b.created || 0));
+}
+
 export function ChatScreen({ navigation, route }: Props) {
   const { sessionId, directory } = route.params;
   const { active } = useServers();
@@ -67,7 +94,15 @@ export function ChatScreen({ navigation, route }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [streaming, setStreaming] = useState(false);
+  // Turn state: a hint flag covers the window where no assistant message
+  // exists yet (between send and the first SSE event), otherwise "streaming"
+  // is DERIVED from the messages themselves — a pending assistant message
+  // means the turn is live. Event handlers never set it permanently: the
+  // debounced server listing refresh recomputes the truth, so a lost or
+  // half-shaped idle/status event can no longer leave "Working…" stuck on
+  // after the response finished.
+  const [streamingHint, setStreamingHint] = useState(false);
+  const streaming = streamingHint || messages.some((m) => m.pending);
   const [composer, setComposer] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
@@ -146,7 +181,7 @@ export function ChatScreen({ navigation, route }: Props) {
       next[idx] = { ...msg, parts, pending: true };
       return next;
     });
-    setStreaming(true);
+    setStreamingHint(true);
   }, [sessionId]);
 
   // Shared v1/v2 part-event appliers. V2 stream events are converted into the
@@ -167,14 +202,14 @@ export function ChatScreen({ navigation, route }: Props) {
       next[idx] = applyPartDelta(next[idx], partID || `${messageID}:${field || 'text'}`, field || 'text', delta);
       return next;
     });
-    setStreaming(true);
+    setStreamingHint(true);
   }, []);
 
   const applyPartUpdate = useCallback((messageID: string | undefined, part: ChatPart | null) => {
     if (!messageID || !part) return;
     const normalized = client?.isV2 ? normalizePartV2(part) : normalizePartV1(part);
     setMessages((prev) => prev.map((m) => (m.id === messageID ? upsertPart(m, normalized) : m)));
-    setStreaming(true);
+    setStreamingHint(true);
   }, [client]);
 
   // V2 *.started events create the assistant message placeholder with an empty
@@ -199,7 +234,7 @@ export function ChatScreen({ navigation, route }: Props) {
         parts: [{ id: partID, type: kind, text: kind === 'text' ? '' : undefined, reasoning: kind === 'reasoning' ? '' : undefined } as ChatPart],
       }];
     });
-    setStreaming(true);
+    setStreamingHint(true);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -234,13 +269,19 @@ export function ChatScreen({ navigation, route }: Props) {
         }
         if (sess.raw?.agent) setSelectedAgent((prev) => prev || sess.raw.agent);
       }
-      setMessages(msgs);
+      // Incremental refresh: MERGE the server listing into the live surface
+      // instead of overwriting it. A listing fetched mid-turn (or one that
+      // omits messages streamed in over SSE) must never blank the whole
+      // conversation; the server value wins per message id, and messages the
+      // listing has not emitted yet (optimistic user message, streamed parts)
+      // survive untouched.
+      setMessages((prev) => (prev.length ? mergeMessages(prev, msgs) : msgs));
       if (active) cacheMessages(active.id, sessionId, msgs);
       setPermission(perms.find((p) => !p.sessionID || p.sessionID === sessionId) || null);
       setQuestion(questions.find((q) => !q.sessionID || q.sessionID === sessionId) || null);
       setForm(forms.find((f) => !f.sessionID || f.sessionID === sessionId) || null);
       setInbox(inb || []);
-      setStreaming(msgs.some((m) => m.pending));
+      setStreamingHint(msgs.some((m) => m.pending));
       // These resolve later than the guard above, so re-check per callback.
       if (sess && active) client.todos(sessionId).then((t) => { if (stillCurrent()) setTodos(t); }).catch(() => {});
       if (sess && active) client.childSessions(sessionId).then((ch) => { if (stillCurrent()) setChildren(ch); }).catch(() => {});
@@ -274,6 +315,15 @@ export function ChatScreen({ navigation, route }: Props) {
   const refreshRef = useRef(refresh);
   useEffect(() => { refreshRef.current = refresh; });
 
+  // Single debounced refresh used by every event-triggered reload: repeated
+  // events push it further out, so it only fires once the event burst quiets
+  // down. The listing then reconciles streaming/pending state with the
+  // server's authoritative truth.
+  const scheduleRefresh = useCallback((ms: number) => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => refresh(), ms);
+  }, [refresh]);
+
   useEffect(() => {
     currentSession.current = sessionId;
     const a = activeRef.current;
@@ -303,12 +353,17 @@ export function ChatScreen({ navigation, route }: Props) {
                 ? prev.map((m) => (m.id === normalized.id ? { ...m, ...normalized, parts: normalized.parts.length ? normalized.parts : m.parts } : m))
                 : [...prev, normalized];
             });
+            // The completed server message is authoritative for turn state:
+            // schedule the reconciling listing refresh (does nothing if a newer
+            // event arrives first).
+            scheduleRefresh(1200);
           }
           break;
         }
         case 'message.part.updated': {
           const part = props.part || props;
           applyPartUpdate(props.messageID || part?.messageID, part);
+          scheduleRefresh(1200);
           break;
         }
         case 'message.part.delta': {
@@ -327,9 +382,8 @@ export function ChatScreen({ navigation, route }: Props) {
         }
         case 'session.idle': {
           if (props.sessionID && props.sessionID !== sessionId) return;
-          setStreaming(false);
-          if (refreshTimer.current) clearTimeout(refreshTimer.current);
-          refreshTimer.current = setTimeout(() => refresh(), 500);
+          setStreamingHint(false);
+          scheduleRefresh(500);
           break;
         }
         case 'session.updated': {
@@ -424,7 +478,7 @@ export function ChatScreen({ navigation, route }: Props) {
         case 'session.reasoning.started':
         case 'session.next.step.started':
         case 'session.step.started': {
-          setStreaming(true);
+          setStreamingHint(true);
           break;
         }
         case 'session.text.delta': {
@@ -439,21 +493,19 @@ export function ChatScreen({ navigation, route }: Props) {
         case 'session.step.ended':
         case 'session.next.step.failed':
         case 'session.step.failed': {
-          if (refreshTimer.current) clearTimeout(refreshTimer.current);
-          refreshTimer.current = setTimeout(() => refresh(), 350);
+          scheduleRefresh(350);
           break;
         }
         case 'session.next.prompted':
         case 'session.next.prompt.admitted': {
-          if (refreshTimer.current) clearTimeout(refreshTimer.current);
-          refreshTimer.current = setTimeout(() => refresh(), 400);
+          scheduleRefresh(400);
           break;
         }
         case 'session.status': {
           const id = props.sessionID || props.id;
           if (id && id !== sessionId) return;
           const status = props.status?.type || props.status || props.type;
-          setStreaming(status === 'busy' || status === 'running' || status === 'retry');
+          setStreamingHint(status === 'busy' || status === 'running' || status === 'retry');
           break;
         }
         case 'permission.asked': {
@@ -488,7 +540,7 @@ export function ChatScreen({ navigation, route }: Props) {
       }
     }, (status) => { if (status === 'open') logDiag('info', 'events', `connected ${sessionId}`); });
     return () => { sub.close(); if (refreshTimer.current) clearTimeout(refreshTimer.current); };
-  }, [client, sessionId, refresh, logDiag, appendStreamDelta, applyDeltaProps, applyPartUpdate, ensureStreamPart]);
+  }, [client, sessionId, logDiag, appendStreamDelta, applyDeltaProps, applyPartUpdate, ensureStreamPart, scheduleRefresh]);
 
   // Catalogs. Runs once per client, not per `selectedModel` change — the
   // down-seeding below reads the current selection through a ref so no
@@ -555,7 +607,7 @@ export function ChatScreen({ navigation, route }: Props) {
     setComposer('');
     const filesToSend = attachments;
     setAttachments([]);
-    setStreaming(true);
+    setStreamingHint(true);
     scrollToEnd();
     try {
       if (client.isV2) {
@@ -581,13 +633,13 @@ export function ChatScreen({ navigation, route }: Props) {
         delivery: delivery || (streaming || inbox.length ? settings.followUpDelivery : undefined),
       });
       if (selectedAgent && client.isV2) client.selectAgent(sessionId, selectedAgent).catch(() => {});
+      // The prompt is accepted: drop the optimistic copy so the authoritative
+      // server message (merged in by refresh) isn't rendered twice.
+      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       // Tracked so a new send replaces any pending refresh and the effect
       // cleanup clears it on unmount (an untracked timer would refresh a dead
       // screen and call navigation.setParams on a dead route).
-      if (mounted.current) {
-        if (refreshTimer.current) clearTimeout(refreshTimer.current);
-        refreshTimer.current = setTimeout(() => refresh(), 350);
-      }
+      if (mounted.current) scheduleRefresh(350);
     } catch (e) {
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(e instanceof Error ? e.message : String(e));
@@ -602,7 +654,9 @@ export function ChatScreen({ navigation, route }: Props) {
     if (!client) return;
     try {
       await client.abort(sessionId);
-      setStreaming(false);
+      setStreamingHint(false);
+      // Force the listing reconciliation even if no idle/status event arrives.
+      scheduleRefresh(400);
     } catch (e) {
       appAlert('Abort failed', e instanceof Error ? e.message : String(e));
     }
@@ -909,7 +963,12 @@ export function ChatScreen({ navigation, route }: Props) {
                 placeholder="Ask anything..."
                 placeholderTextColor={c.textWeaker}
                 multiline
-                style={{ color: c.text, fontSize: 15, lineHeight: 20, maxHeight: 140, minHeight: 24, paddingVertical: 0, flex: 1 }}
+                // No flex: integer `flex: 1` in the auto-height column sets
+                // flexBasis 0, which ignores the text content — the input
+                // stayed at its 24px floor and older lines scrolled out of
+                // view. With no flex, a multiline TextInput sizes itself to
+                // its content and grows up to maxHeight, WhatsApp-style.
+                style={{ color: c.text, fontSize: 15, lineHeight: 20, maxHeight: 132, minHeight: 24, paddingVertical: 0, textAlignVertical: 'top' }}
               />
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}>
                 <IconButton icon="add" size={20} onPress={() => setPicker('attach')} color={c.textBase} />
