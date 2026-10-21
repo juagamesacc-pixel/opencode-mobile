@@ -9,7 +9,7 @@ import { normalizeMessageV1, normalizeMessageV2 } from './normalize';
 export function normalizeBaseUrl(input: string): string {
   let url = input.trim();
   if (!url) return url;
-  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
   if (!url.endsWith('/')) url += '/';
   return url;
 }

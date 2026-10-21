@@ -65,7 +65,7 @@ export function ServerSetupScreen({ navigation, route }: NativeStackScreenProps<
 
           {error ? <View style={{ marginBottom: 14 }}><ErrorBanner message={error} /></View> : null}
 
-          <TextField label="Server URL" value={url} onChangeText={setUrl} placeholder="http://100.64.0.2:4096" autoFocus={!editing} hint="http or https, with the port your server is listening on." />
+          <TextField label="Server URL" value={url} onChangeText={setUrl} placeholder="macbook.local:4096" autoFocus={!editing} hint="Bare hosts use https://. Type http://… for plain HTTP (LAN)." />
           <TextField label="Name (optional)" value={name} onChangeText={setName} placeholder="My laptop" />
           <TextField
             label="Username"
