@@ -114,5 +114,3 @@ export function TextMateLanguagesScreen({ navigation }: Props) {
     </Screen>
   );
 }
-
-const styles = StyleSheet.create({});

@@ -16,12 +16,6 @@ export interface ServerInput {
   password: string | null;
 }
 
-interface PersistedState {
-  profiles: ServerProfile[];
-  activeId: string | null;
-  dirs: Record<string, string[]>;
-}
-
 interface ServersContextValue {
   servers: ServerProfile[];
   active: ServerProfile | null;

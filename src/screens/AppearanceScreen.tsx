@@ -30,13 +30,13 @@ export function AppearanceScreen({ navigation }: Props) {
             </View>
             <View style={[styles.bubble, { backgroundColor: c.surfaceRaised, borderColor: c.borderWeaker }]}>
               <Text style={{ color: c.text, fontSize: 13, fontWeight: '600' }}>Implement the settings screen</Text>
-              <Text style={{ color: c.textWeak, fontSize: 11.5, marginTop: 4 }}>I'll wire the appearance controls and verify them.</Text>
+              <Text style={{ color: c.textWeak, fontSize: 11.5, marginTop: 4 }}>I&apos;ll wire the appearance controls and verify them.</Text>
             </View>
             <View style={[styles.code, { backgroundColor: c.codeBg }]}>
               <Text style={{ color: preview.syntax.keyword, fontSize: 11.5, fontFamily: 'monospace' }}>const</Text>
               <Text style={{ color: preview.syntax.variable, fontSize: 11.5, fontFamily: 'monospace' }}> theme </Text>
               <Text style={{ color: preview.syntax.operator, fontSize: 11.5, fontFamily: 'monospace' }}>= </Text>
-              <Text style={{ color: preview.syntax.string, fontSize: 11.5, fontFamily: 'monospace' }}>'porcelain'</Text>
+              <Text style={{ color: preview.syntax.string, fontSize: 11.5, fontFamily: 'monospace' }}>&apos;porcelain&apos;</Text>
             </View>
           </View>
         </View>

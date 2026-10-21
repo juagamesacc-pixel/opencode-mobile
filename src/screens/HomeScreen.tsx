@@ -36,32 +36,44 @@ export function HomeScreen({ navigation }: Props) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameText, setRenameText] = useState('');
   const [creating, setCreating] = useState(false);
+  // Consistent snapshot of "now": taken when data loads, so "x hours ago"
+  // labels, the recency cutoff, and all renders agree (and re-rendering the
+  // list does not move timestamps or hide/show sessions mid-scroll).
+  const [now, setNow] = useState(() => Date.now());
   const refreshTimer = useRef<any>(null);
 
-  const clientFor = useCallback((dir?: string) => (active ? new ApiClient(active, dir) : null), [active]);
-
-  useEffect(() => {
+  // Reset the project filter when the active server changes, adjusted during
+  // render (react.dev's endorsed pattern) instead of an effect round trip.
+  const [prevActiveId, setPrevActiveId] = useState<string | null | undefined>(active?.id);
+  if (active?.id !== prevActiveId) {
+    setPrevActiveId(active?.id);
     setSelected('all');
     setByDir({});
-  }, [active?.id]);
+  }
 
-  // Seed from cache, then discover a default directory.
+  // Seed from cache, then discover a default directory. Runs when the active
+  // server ID or the directory count changes — a re-probe of the same server
+  // (new profile object, same ID) must not re-seed stale cache over a live
+  // list, so the current profile is read through a ref.
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; });
   useEffect(() => {
-    if (!active) return;
+    const a = activeRef.current;
+    if (!a) return;
     let cancelled = false;
     (async () => {
-      const cached = await readCachedSessions(active.id);
+      const cached = await readCachedSessions(a.id);
       if (!cancelled && Object.keys(cached).length) setByDir(cached);
       if (directories.length === 0) {
         try {
-          const proj = await new ApiClient(active).currentProject();
+          const proj = await new ApiClient(a).currentProject();
           const dir = (proj as any)?.worktree || (proj as any)?.canonical || (proj as any)?.directory;
           if (dir && !cancelled) addDirectory(dir);
         } catch {}
       }
     })();
     return () => { cancelled = true; };
-  }, [active?.id, directories.length]);
+  }, [active?.id, directories.length, addDirectory]);
 
   const dirs = useMemo(() => {
     if (selected === 'all') return directories;
@@ -107,6 +119,7 @@ export function HomeScreen({ navigation }: Props) {
       setError(msg);
       logDiag('error', 'home', msg);
     } finally {
+      setNow(Date.now());
       setLoading(false);
       setRefreshing(false);
     }
@@ -119,11 +132,16 @@ export function HomeScreen({ navigation }: Props) {
   const loadRef = useRef(load);
   useEffect(() => { loadRef.current = load; });
 
-  useEffect(() => { load(); }, [active?.id, selected, directories.join('|')]);
+  // Reload whenever the server, project filter, or directory set changes.
+  // `directories.join('|')` is normalized to a stable key so that a
+  // recomputed array (same contents) does not retrigger the load.
+  const dirKey = useMemo(() => directories.join('|'), [directories]);
+  useEffect(() => { loadRef.current(); }, [active?.id, selected, dirKey]);
 
   useEffect(() => {
-    if (!active) return;
-    const client = new ApiClient(active, selected === 'all' ? undefined : selected);
+    const a = activeRef.current;
+    if (!a) return;
+    const client = new ApiClient(a, selected === 'all' ? undefined : selected);
     const sub = subscribeEvents(client, (evt) => {
       if (/^(message|session|permission|question)\./.test(evt.type)) {
         if (refreshTimer.current) clearTimeout(refreshTimer.current);
@@ -139,13 +157,16 @@ export function HomeScreen({ navigation }: Props) {
       for (const s of sessions) list.push({ ...s, _dir: s.directory || dir || undefined });
     }
     const seen = new Set<string>();
-    return list.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
+    // parentID sessions are subagent conversations — they are opened from
+    // inside their parent chat, never listed at top level. The filter also
+    // cleans up data cached before listSessions started excluding them.
+    return list.filter((s) => !s.parentID && (seen.has(s.id) ? false : (seen.add(s.id), true)))
       .sort((a, b) => (b.time?.updated || b.time?.created || 0) - (a.time?.updated || a.time?.created || 0));
   }, [byDir]);
 
   const running = allSessions.filter((s) => activeIds.includes(s.id) || (s as any).status === 'busy');
   const ready = allSessions.filter((s) => !running.some((r) => r.id === s.id));
-  const cutoff = Date.now() - Math.max(1, settings.recentWindowHours) * 3600_000;
+  const cutoff = now - Math.max(1, settings.recentWindowHours) * 3600_000;
   // `ready` already excludes every running session, so the recent window is the
   // only condition left to test here.
   const recent = ready.filter((s) => (s.time?.updated || s.time?.created || 0) >= cutoff);
@@ -308,7 +329,7 @@ export function HomeScreen({ navigation }: Props) {
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                       <View style={[styles.statusDot, { backgroundColor: isRunning ? theme.colors.success : theme.colors.border }]} />
                       <Text numberOfLines={1} style={{ color: theme.colors.text, fontSize: 15, fontWeight: '600', flex: 1 }}>{item.title}</Text>
-                      <Text style={{ color: theme.colors.textWeaker, fontSize: 11 }}>{relativeTime(item.time?.updated || item.time?.created)}</Text>
+                      <Text style={{ color: theme.colors.textWeaker, fontSize: 11 }}>{relativeTime(item.time?.updated || item.time?.created, now)}</Text>
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
                       <Text numberOfLines={1} style={{ color: theme.colors.textWeak, fontSize: 11.5, flex: 1 }}>
@@ -321,7 +342,6 @@ export function HomeScreen({ navigation }: Props) {
                         </Text>
                       ) : null}
                       {item.cost ? <Text style={{ color: theme.colors.textWeaker, fontSize: 11 }}>{formatCost(item.cost)}</Text> : null}
-                      {item.parentID ? <Ionicons name="git-branch-outline" size={12} color={theme.colors.textWeaker} /> : null}
                     </View>
                   </Card>
                 </Pressable>

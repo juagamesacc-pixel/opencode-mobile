@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ScrollView, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import { useServers } from '../state/servers';
@@ -43,11 +43,27 @@ export function FileViewerScreen({ navigation, route }: Props) {
     setLoading(false);
   }, [active, directory, path, sessionId]);
 
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (content == null && diff?.patch) setTab('diff');
-    else if (content != null && !diff?.patch) setTab('file');
-  }, [content, diff?.patch]);
+  // Reload whenever the underlying keys change; `load` is reached through a
+  // ref kept fresh every render, so the effect body holds no reactive values.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; });
+  useEffect(() => { loadRef.current(); }, [active, directory, path, sessionId]);
+
+  // Auto-select the tab when the loaded data supports it: diff-only data
+  // (unreadable file) switches to Diff, plain file content without a patch
+  // switches to File. Anything ambiguous keeps the user's chosen tab.
+  // Implemented as state adjusted during render (react.dev's endorsed
+  // pattern) instead of an effect, so the tab never lags a render.
+  const [autoKey, setAutoKey] = useState<{ content: string | null; hasPatch: boolean } | null>(null);
+  const autoNext = content == null && diff?.patch
+    ? 'diff'
+    : content != null && !diff?.patch
+      ? 'file' as const
+      : null;
+  if (autoNext && (autoKey?.content !== content || autoKey.hasPatch !== !!diff?.patch)) {
+    setAutoKey({ content, hasPatch: !!diff?.patch });
+    setTab(autoNext);
+  }
 
   const language = useMemo(() => languageFromPath(path), [path]);
 

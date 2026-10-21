@@ -48,7 +48,7 @@ export function TerminalScreen({ navigation, route }: Props) {
     webRef.current?.injectJavaScript(`window.terminalWrite(${JSON.stringify(text)}); true;`);
   }, []);
 
-  useEffect(() => {
+  const connect = useCallback(() => {
     if (!active) return;
     const client = new ApiClient(active, directory);
     let closed = false;
@@ -93,6 +93,17 @@ export function TerminalScreen({ navigation, route }: Props) {
       try { socket?.close(); } catch {}
       socketRef.current = null;
     };
+  }, [active, ptyId, directory, write]);
+
+  // The connection setup must run whenever its keys change (server, PTY,
+  // directory, or a manual reconnect). The live `connect` is reached through a
+  // ref refreshed every render, so the effect body holds no reactive values
+  // and reconnects do not depend on callback identity.
+  const connectRef = useRef(connect);
+  useEffect(() => { connectRef.current = connect; });
+  useEffect(() => {
+    const cleanup = connectRef.current();
+    return cleanup;
   }, [active?.id, ptyId, directory, attempt, write]);
 
   const onMessage = (event: any) => {

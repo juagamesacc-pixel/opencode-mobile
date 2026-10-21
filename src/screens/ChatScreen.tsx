@@ -55,8 +55,6 @@ function flattenModels(providers: any[]): ChatModel[] {
   return out;
 }
 
-function messageTime(m: ChatMessage) { return m.created || 0; }
-
 export function ChatScreen({ navigation, route }: Props) {
   const { sessionId, directory } = route.params;
   const { active } = useServers();
@@ -67,7 +65,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [composer, setComposer] = useState('');
@@ -81,7 +78,6 @@ export function ChatScreen({ navigation, route }: Props) {
   const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [models, setModels] = useState<ChatModel[]>([]);
-  const [defaultModel, setDefaultModel] = useState<ModelRef | null>(null);
   const [selectedModel, setSelectedModel] = useState<ModelRef | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
@@ -107,6 +103,11 @@ export function ChatScreen({ navigation, route }: Props) {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  // Current server profile, readable from effects keyed on `active?.id`
+  // without widening their dependency list (a new profile object with the
+  // same ID must not re-trigger them).
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; });
 
   const scrollToEnd = useCallback((animated = true) => {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated }));
@@ -200,17 +201,7 @@ export function ChatScreen({ navigation, route }: Props) {
     setStreaming(true);
   }, []);
 
-  const upsertMessage = useCallback((msg: ChatMessage) => {
-    setMessages((prev) => {
-      const idx = prev.findIndex((m) => m.id === msg.id);
-      if (idx === -1) return [...prev, msg];
-      const next = prev.slice();
-      next[idx] = { ...next[idx], ...msg, parts: msg.parts.length ? msg.parts : next[idx].parts };
-      return next.sort((a, b) => (messageTime(a) - messageTime(b)));
-    });
-  }, []);
-
-  const refresh = useCallback(async (spin = false) => {
+  const refresh = useCallback(async () => {
     if (!client) return;
     // Snapshot the session this refresh was issued for. After every await we
     // re-check it against the ref the SSE handler uses: if the user switched
@@ -219,7 +210,6 @@ export function ChatScreen({ navigation, route }: Props) {
     // permission/question sheets, loading flags).
     const forSession = sessionId;
     const stillCurrent = () => currentSession.current === forSession;
-    if (spin) setRefreshing(true);
     try {
       const [sess, msgs, perms, questions, forms, inb] = await Promise.all([
         client.getSession(sessionId).catch(() => null),
@@ -262,23 +252,37 @@ export function ChatScreen({ navigation, route }: Props) {
     } finally {
       if (stillCurrent()) {
         setLoading(false);
-        setRefreshing(false);
       }
     }
   }, [client, sessionId, active, route.params.title, navigation, logDiag]);
 
-  useEffect(() => {
-    currentSession.current = sessionId;
+  // Reset the whole conversation when the session (or its server) changes.
+  // Applied during render (react.dev's endorsed pattern for reacting to prop
+  // changes) instead of a setState-in-effect round trip.
+  const [viewKey, setViewKey] = useState({ sessionId, activeId: active?.id });
+  if (viewKey.sessionId !== sessionId || viewKey.activeId !== active?.id) {
+    setViewKey({ sessionId, activeId: active?.id });
     setMessages([]);
     setSession(null);
     setLoading(true);
-    if (active) readCachedMessages(active.id, sessionId).then((cached) => {
+  }
+
+  // The live `refresh` is reached through a ref refreshed every render, so
+  // the effect below never holds a stale closure and its body contains no
+  // reactive values beyond the session keys it is keyed on.
+  const refreshRef = useRef(refresh);
+  useEffect(() => { refreshRef.current = refresh; });
+
+  useEffect(() => {
+    currentSession.current = sessionId;
+    const a = activeRef.current;
+    if (a) readCachedMessages(a.id, sessionId).then((cached) => {
       if (cached.length && currentSession.current === sessionId) {
         setMessages(cached);
         setLoading(false);
       }
     });
-    refresh();
+    refreshRef.current();
   }, [sessionId, active?.id]);
 
   useEffect(() => {
@@ -483,9 +487,13 @@ export function ChatScreen({ navigation, route }: Props) {
       }
     }, (status) => { if (status === 'open') logDiag('info', 'events', `connected ${sessionId}`); });
     return () => { sub.close(); if (refreshTimer.current) clearTimeout(refreshTimer.current); };
-  }, [client, sessionId, refresh, logDiag]);
+  }, [client, sessionId, refresh, logDiag, appendStreamDelta, applyDeltaProps, applyPartUpdate, ensureStreamPart]);
 
-  // Catalogs
+  // Catalogs. Runs once per client, not per `selectedModel` change — the
+  // down-seeding below reads the current selection through a ref so no
+  // re-query is triggered by a model switch.
+  const selectedModelRef = useRef(selectedModel);
+  useEffect(() => { selectedModelRef.current = selectedModel; });
   useEffect(() => {
     if (!client) return;
     (async () => {
@@ -499,9 +507,8 @@ export function ChatScreen({ navigation, route }: Props) {
         setCommands(cmds || []);
         const d = prov.default || {};
         const def = d.providerID && d.modelID ? { providerID: d.providerID, modelID: d.modelID, variant: d.variant } : null;
-        setDefaultModel(def);
         const saved = await AsyncStorage.getItem(LAST_MODEL_KEY);
-        if (!selectedModel) {
+        if (!selectedModelRef.current) {
           if (saved) { try { setSelectedModel(JSON.parse(saved)); } catch { setSelectedModel(def); } }
           else setSelectedModel(def);
         }
@@ -509,11 +516,11 @@ export function ChatScreen({ navigation, route }: Props) {
         logDiag('warn', 'catalog', e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [client, active?.id]);
+  }, [client, logDiag]);
 
   useEffect(() => {
     if (selectedModel) AsyncStorage.setItem(LAST_MODEL_KEY, JSON.stringify(selectedModel)).catch(() => {});
-  }, [selectedModel?.providerID, selectedModel?.modelID, selectedVariant]);
+  }, [selectedModel]);
 
   const modelLabel = useMemo(() => {
     const m = models.find((x) => x.providerID === selectedModel?.providerID && x.modelID === selectedModel?.modelID);
@@ -683,13 +690,19 @@ export function ChatScreen({ navigation, route }: Props) {
   };
 
   const revert = (m: ChatMessage) => {
-    Alert.alert('Revert message?', 'This stages the session back to this message. OpenCode will show it as a revert until you unrevert.', [
+    Alert.alert('Revert to here?', 'The session is rolled back to before this message. The message text returns to the input so you can edit it, discard it, or send it again.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Revert', style: 'destructive', onPress: async () => {
           if (!client) return;
-          try { await client.revert(sessionId, m.id); refresh(); }
-          catch (e) { Alert.alert('Revert failed', e instanceof Error ? e.message : String(e)); }
+          try {
+            await client.revert(sessionId, m.id);
+            // Put the reverted message back into the composer: the user can
+            // edit it, clear it, or resend it as-is.
+            const text = m.parts.filter((p) => p.type === 'text').map((p) => p.text || '').join('\n\n').trim();
+            if (text) setComposer(text);
+            refresh();
+          } catch (e) { Alert.alert('Revert failed', e instanceof Error ? e.message : String(e)); }
         },
       },
     ]);
@@ -733,9 +746,6 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const completeTodos = todos.filter((t) => t.status === 'completed').length;
   const isChild = !!session?.parentID;
-  const changesFiles = session?.summary?.files || 0;
-  const additions = session?.summary?.additions || 0;
-  const deletions = session?.summary?.deletions || 0;
   const tokenTotal = (session?.tokens?.input || 0) + (session?.tokens?.output || 0) + (session?.tokens?.reasoning || 0);
   // Single source of truth for what the FlatList renders: renderItem and the
   // timeline chips must index into this array, never into the raw `messages`
@@ -773,7 +783,7 @@ export function ChatScreen({ navigation, route }: Props) {
         </Pressable>
       ) : null}
 
-      {error ? <View style={{ padding: 10 }}><ErrorBanner message={error} onRetry={() => refresh(true)} /></View> : null}
+      {error ? <View style={{ padding: 10 }}><ErrorBanner message={error} onRetry={() => refresh()} /></View> : null}
 
       {loading && !messages.length ? <Loading label="Loading conversation…" /> : (
         <FlatList
@@ -800,6 +810,7 @@ export function ChatScreen({ navigation, route }: Props) {
                 onFork={() => fork(item)}
                 onRevert={() => revert(item)}
                 onOpenFile={(path) => navigation.navigate('FileViewer', { path, directory, sessionId })}
+                onOpenSession={(id) => navigation.push('Chat', { sessionId: id, directory })}
               />
             );
           }}
@@ -825,7 +836,11 @@ export function ChatScreen({ navigation, route }: Props) {
         </Pressable>
       ) : null}
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
+      {/* Edge-to-edge Android ignores windowSoftInputMode="adjustResize" (see
+          android/gradle.properties edgeToEdgeEnabled), so the keyboard never
+          resizes the window there — behavior="padding" is required on both
+          platforms to lift this composer above the keyboard. */}
+      <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
         {todos.length ? (
           <Pressable onPress={() => setPicker('todos')} style={[styles.todoBar, { borderTopColor: c.borderWeaker }]}>
             <Ionicons name="checkbox-outline" size={14} color={c.textBase} />

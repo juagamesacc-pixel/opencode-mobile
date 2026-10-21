@@ -5,7 +5,7 @@ import { CodeBlock } from './CodeBlock';
 import { useSettings } from '../state/settings';
 
 export function Markdown({ children, compact }: { children: string; compact?: boolean }) {
-  const { theme, settings } = useSettings();
+  const { theme } = useSettings();
   const mono = Platform.select({ ios: 'Menlo', android: 'monospace' }) as string;
   const c = theme.colors;
 

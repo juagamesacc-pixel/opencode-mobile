@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
@@ -49,7 +49,15 @@ export function AddProjectScreen({ navigation, route }: Props) {
     } finally { setLoading(false); }
   }, [active]);
 
-  useEffect(() => { load(path); }, [load]); // initial + server changes only; folder taps pass explicit paths
+  // Directory browsing state lives only on this screen: the initial (and
+  // server-change) load re-uses the current path via refs, while explicit
+  // folder taps call `load(newPath)` themselves — listing `path` here would
+  // refetch a directory the user just opened.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; });
+  const pathRef = useRef(path);
+  useEffect(() => { pathRef.current = path; });
+  useEffect(() => { loadRef.current(pathRef.current); }, [load]);
 
   const open = (node: FileNode) => {
     setPath(node.path);

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -35,7 +35,12 @@ export function ChangesScreen({ navigation, route }: Props) {
     } finally { setLoading(false); }
   }, [active, directory, sessionId, messageId, source]);
 
-  useEffect(() => { load(); }, [load]);
+  // Reload whenever the underlying keys change. The live `load` is reached
+  // through a ref (refreshed every render), so the effect body itself holds no
+  // reactive values and the fetch cannot capture a stale closure.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; });
+  useEffect(() => { loadRef.current(); }, [active, directory, sessionId, messageId, source]);
 
   const additions = files.reduce((n, f) => n + (f.additions || 0), 0);
   const deletions = files.reduce((n, f) => n + (f.deletions || 0), 0);

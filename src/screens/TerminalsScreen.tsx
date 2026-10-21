@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -29,9 +29,14 @@ export function TerminalsScreen({ navigation, route }: Props) {
     finally { setLoading(false); }
   }, [active, directory]);
 
+  // Load on mount and refocus. `load` is reached through a ref refreshed
+  // every render, so the focus callback always calls the freshest version
+  // without the effect having to resubscribe on every load identity change.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; });
   useEffect(() => {
-    load();
-    const unsub = navigation.addListener('focus', load);
+    loadRef.current();
+    const unsub = navigation.addListener('focus', () => loadRef.current());
     return unsub;
   }, [navigation, load]);
 

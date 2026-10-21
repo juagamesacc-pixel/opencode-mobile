@@ -21,7 +21,7 @@ const EVENT_TYPES = [
   'permission.asked', 'permission.replied', 'question.asked', 'question.replied',
   'question.rejected', 'question.v2.replied', 'question.v2.rejected', 'vcs.branch.updated',
   'session.deleted', 'session.diff', 'session.agent.selected', 'session.model.selected',
-  'session.moved', 'session.renamed', 'session.retry.scheduled', 'session.usage.updated',
+  'session.moved', 'session.retry.scheduled',
   'session.text.started', 'session.text.delta', 'session.text.ended',
   'session.reasoning.started', 'session.reasoning.delta', 'session.reasoning.ended',
   'session.tool.called', 'session.tool.success', 'session.tool.failed', 'session.tool.progress',

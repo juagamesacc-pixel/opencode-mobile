@@ -47,7 +47,7 @@ export function SyntaxPickerScreen({ navigation }: Props) {
                 </View>
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: 6, marginTop: 3 }}>
                   <Text style={{ color: s.comment, fontFamily: 'monospace', fontSize: 11.5 }}>{'// '}</Text>
-                  <Text style={{ color: s.string, fontFamily: 'monospace', fontSize: 11.5 }}>'hello, world'</Text>
+                  <Text style={{ color: s.string, fontFamily: 'monospace', fontSize: 11.5 }}>&apos;hello, world&apos;</Text>
                 </View>
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', columnGap: 6, marginTop: 3 }}>
                   <Text style={{ color: s.constant, fontFamily: 'monospace', fontSize: 11.5 }}>const</Text>

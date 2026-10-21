@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -20,13 +20,16 @@ export function ServerSetupScreen({ navigation, route }: NativeStackScreenProps<
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
-  useEffect(() => {
-    if (route.params?.pairUrl) {
-      setUrl(route.params.pairUrl);
-      if (route.params.pairUser) setUsername(route.params.pairUser);
-      if (route.params.pairPass) setPassword(route.params.pairPass);
-    }
-  }, [route.params?.pairUrl]);
+  // Pair-code params captured from a QR scan are applied while rendering
+  // (react.dev's endorsed pattern for reacting to prop changes), replacing a
+  // setState-in-effect round trip.
+  const [appliedPairUrl, setAppliedPairUrl] = useState(route.params?.pairUrl);
+  if (route.params?.pairUrl && route.params.pairUrl !== appliedPairUrl) {
+    setAppliedPairUrl(route.params.pairUrl);
+    setUrl(route.params.pairUrl);
+    if (route.params.pairUser) setUsername(route.params.pairUser);
+    if (route.params.pairPass) setPassword(route.params.pairPass);
+  }
 
   const save = async () => {
     setError(null);

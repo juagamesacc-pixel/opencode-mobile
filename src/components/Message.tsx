@@ -8,13 +8,14 @@ import { CodeBlock } from './CodeBlock';
 import { formatCost, formatDuration, formatTokens } from '../utils/time';
 
 export function MessageView({
-  message, onRevert, onFork, onCopy, onOpenFile, compact,
+  message, onRevert, onFork, onCopy, onOpenFile, onOpenSession, compact,
 }: {
   message: ChatMessage;
   onRevert?: () => void;
   onFork?: () => void;
   onCopy?: () => void;
   onOpenFile?: (path: string) => void;
+  onOpenSession?: (sessionId: string) => void;
   compact?: boolean;
 }) {
   const { theme } = useSettings();
@@ -61,7 +62,7 @@ export function MessageView({
         {textParts.map((p) => (
           p.text?.trim() ? <Markdown key={p.id} compact={compact}>{p.text}</Markdown> : null
         ))}
-        {tools.map((p) => <ToolView key={p.id} part={p} onOpenFile={onOpenFile} />)}
+        {tools.map((p) => <ToolView key={p.id} part={p} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />)}
         {files.map((p) => (
           <View key={p.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 5 }}>
             <Ionicons name={p.mime?.startsWith('image/') ? 'image-outline' : 'document-outline'} size={15} color={c.textBase} />
@@ -129,7 +130,7 @@ function ReasoningView({ part }: { part: ChatPart }) {
   );
 }
 
-function ToolView({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: string) => void }) {
+function ToolView({ part, onOpenFile, onOpenSession }: { part: ChatPart; onOpenFile?: (path: string) => void; onOpenSession?: (sessionId: string) => void }) {
   const { theme } = useSettings();
   const [open, setOpen] = useState(false);
   const c = theme.colors;
@@ -145,6 +146,10 @@ function ToolView({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: st
   const input = st?.input;
   const output = st?.output;
   const filePath = input?.filePath || input?.path || input?.file;
+  // An agent spawning a subagent (the "task" tool) reports the child session
+  // in the tool metadata; link to it so subagent sessions are reachable from
+  // inside the chat and from nowhere else.
+  const subagentId = st?.metadata?.sessionID || st?.metadata?.sessionId;
   return (
     <View style={[styles.tool, { backgroundColor: c.surface, borderColor: c.borderWeaker }]}>
       <Pressable onPress={() => setOpen((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 7, padding: 9 }}>
@@ -160,6 +165,12 @@ function ToolView({ part, onOpenFile }: { part: ChatPart; onOpenFile?: (path: st
       {filePath && onOpenFile ? (
         <Pressable onPress={() => onOpenFile(String(filePath))} style={{ paddingHorizontal: 9, paddingBottom: 7 }}>
           <Text numberOfLines={1} style={{ color: c.textInteractive, fontSize: 11 }}>{String(filePath)}</Text>
+        </Pressable>
+      ) : null}
+      {subagentId && onOpenSession ? (
+        <Pressable onPress={() => onOpenSession(String(subagentId))} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingBottom: 7 }}>
+          <Ionicons name="git-branch-outline" size={12} color={c.textInteractive} />
+          <Text numberOfLines={1} style={{ color: c.textInteractive, fontSize: 11 }}>Open subagent session</Text>
         </Pressable>
       ) : null}
       {open ? (

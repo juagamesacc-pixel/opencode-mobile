@@ -3,7 +3,7 @@ import type {
   ModelRef, PermissionRequest, Project, Protocol, Pty, QuestionRequest, ServerInfo,
   ServerProfile, Session, Todo, VcsInfo,
 } from './types';
-import { decodeBase64, encodeBase64 } from '../utils/base64';
+import { encodeBase64 } from '../utils/base64';
 import { normalizeMessageV1, normalizeMessageV2 } from './normalize';
 
 export function normalizeBaseUrl(input: string): string {
@@ -172,7 +172,7 @@ export class ApiClient {
     let cursor: string | undefined;
     for (let page = 0; page < 20; page++) {
       const res = await this.request<any>('api/session', {
-        query: { directory: queryDir, cursor, parentID: undefined },
+        query: { directory: queryDir, cursor },
       });
       const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.sessions ?? [];
       out.push(...items.map(normalizeSessionV2));
@@ -210,18 +210,25 @@ export class ApiClient {
     const dir = directory ?? this.directory;
     if (!this.isV2) {
       const list = await this.request<any[]>('session', { query: { directory: dir } });
-      return (list || []).map(normalizeSessionV1);
+      // Child sessions (parentID set) are subagent sessions spawned inside a
+      // parent conversation; they belong on the parent's "Child sessions"
+      // list, not the top-level listing.
+      return (list || []).map(normalizeSessionV1).filter((s) => !s.parentID);
     }
     // The directory-scoped endpoint returns [] for unknown/stale paths instead
     // of an error, which would blank the whole list. Always fetch the global
     // list (all locations) and filter client-side for the requested directory.
     const global = await this.globalSessions();
-    if (!dir) return global;
+    if (!dir) return global.filter((s) => !s.parentID);
     const scoped = await this.fetchSessionPage(dir).catch(() => [] as Session[]);
     const seen = new Set<string>();
     const out: Session[] = [];
     for (const s of [...scoped, ...global.filter((x) => x.directory === dir)]) {
-      if (s.id && !seen.has(s.id)) { seen.add(s.id); out.push(s); }
+      // Drop subagent (child) sessions as above, including mid-page duplicates
+      // with different parent info.
+      if (!s.id || seen.has(s.id) || s.parentID) continue;
+      seen.add(s.id);
+      out.push(s);
     }
     return out;
   }
@@ -521,7 +528,7 @@ export class ApiClient {
       await this.request(`api/session/${sessionID}/inbox/${itemID}`, {
         method: 'PATCH', body: { delivery: action },
       });
-    } catch (e) {
+    } catch {
       await this.request(`api/session/${sessionID}/inbox/${itemID}/${action}`, {
         method: 'POST', body: { delivery: action },
       });
@@ -640,7 +647,7 @@ export class ApiClient {
         query: { from: messageID, context: 3 },
       });
       return res?.data ?? res?.items ?? res ?? [];
-    } catch (e) {
+    } catch {
       // Older v2 builds omit this route; the classic diff endpoint still works.
       return (await this.request<FileDiff[]>('session/' + sessionID + '/diff', {
         query: { directory: this.directory, messageID },
