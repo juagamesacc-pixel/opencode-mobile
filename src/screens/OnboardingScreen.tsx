@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Dimensions, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -7,8 +7,6 @@ import type { RootStackParamList } from '../navigation/types';
 import { useSettings } from '../state/settings';
 import { useServers } from '../state/servers';
 import { Button } from '../components/ui';
-
-const { width } = Dimensions.get('window');
 
 type Page = { id: string; icon: any; title: string; body?: string; note?: string; rows?: { icon: any; title: string; detail: string }[] };
 
@@ -44,6 +42,10 @@ export function OnboardingScreen({ navigation }: NativeStackScreenProps<RootStac
   const { theme, update } = useSettings();
   const { servers } = useServers();
   const insets = useSafeAreaInsets();
+  // Live dimensions: a module-level Dimensions.get('window') snapshot goes
+  // stale after rotation, breaking the pager item width and the
+  // momentum-to-index math below.
+  const { width } = useWindowDimensions();
   const [index, setIndex] = useState(0);
   const listRef = useRef<FlatList>(null);
   const last = index === PAGES.length - 1;

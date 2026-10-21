@@ -40,6 +40,13 @@ function looksHealthy(info: any): boolean {
   return true;
 }
 
+interface ProbeFailure {
+  label: string;
+  message: string;
+  kind: ServerProbeError['kind'];
+  status?: number;
+}
+
 /**
  * Mirrors the Android app's probing order. V2 servers expose /api/info (newer)
  * or /api/health (older opencode 2 previews); classic servers expose
@@ -47,13 +54,23 @@ function looksHealthy(info: any): boolean {
  */
 export async function probeServer(profile: ServerProfile): Promise<ProbeResult> {
   const base = { ...profile, baseUrl: normalizeBaseUrl(profile.baseUrl) };
-  const failures: string[] = [];
+  const failures: ProbeFailure[] = [];
+
+  const record = (label: string, e: unknown) => {
+    const err = e as ServerProbeError;
+    failures.push({
+      label,
+      message: err?.message ?? String(e),
+      kind: err && err.kind ? err.kind : 'transport',
+      status: err?.status,
+    });
+  };
 
   try {
     const info = await attempt({ ...base, protocol: 'v2' }, 'api/info');
     return { protocol: 'v2', info: info || {} };
   } catch (e) {
-    failures.push(`api/info: ${(e as Error).message}`);
+    record('api/info', e);
   }
 
   try {
@@ -61,7 +78,7 @@ export async function probeServer(profile: ServerProfile): Promise<ProbeResult> 
     if (!looksHealthy(health)) throw new ServerProbeError('unhealthy', 'Server reported unhealthy');
     return { protocol: 'v2', info: health || {} };
   } catch (e) {
-    failures.push(`api/health: ${(e as Error).message}`);
+    record('api/health', e);
   }
 
   try {
@@ -69,8 +86,23 @@ export async function probeServer(profile: ServerProfile): Promise<ProbeResult> 
     if (!looksHealthy(health)) throw new ServerProbeError('unhealthy', 'Server reported unhealthy');
     return { protocol: 'v1', info: health || {} };
   } catch (e) {
-    failures.push(`global/health: ${(e as Error).message}`);
+    record('global/health', e);
   }
 
-  throw new ServerProbeError('transport', `No health endpoint. ${failures.join(' · ')}`);
+  // The kind of the first failure decides what the user is told: an HTTP 401
+  // is a credential problem, not a missing health endpoint.
+  const first = failures[0];
+  const kind: ServerProbeError['kind'] = first ? first.kind : 'transport';
+  const status = first?.status;
+  const detail = failures.map((f) => `${f.label}: ${f.message}`).join(' · ');
+  if (kind === 'http' && (status === 401 || status === 403)) {
+    throw new ServerProbeError('http', `Authentication failed (HTTP ${status}). ${detail}`, status);
+  }
+  if (kind === 'http') {
+    throw new ServerProbeError('http', `Server responded with HTTP ${status}. ${detail}`, status);
+  }
+  if (kind === 'unhealthy') {
+    throw new ServerProbeError('unhealthy', `Server reported unhealthy. ${detail}`, status);
+  }
+  throw new ServerProbeError('transport', `No health endpoint. ${detail}`, status);
 }

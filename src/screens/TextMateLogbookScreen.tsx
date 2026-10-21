@@ -9,9 +9,19 @@ import { LANGUAGES } from './TextMateLanguagesScreen';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'TextMateLogbook'>;
 
+// The diagnostics ring only carries `tag` + `message` (see DiagEntry in
+// src/state/settings.tsx) and nothing logs with a 'textmate' tag, so the old
+// tag filter matched nothing and this screen was permanently empty. Match the
+// entries that can actually relate to this screen instead: any diagnostic that
+// mentions grammars, syntax, or highlighting, by tag or by message text.
+const GRAMMAR_RE = /textmate|grammar|syntax|highlight/i;
+
 export function TextMateLogbookScreen({ navigation }: Props) {
   const { settings, theme, diagnostics } = useSettings();
-  const logs = useMemo(() => diagnostics.filter((d) => d.tag.toLowerCase().includes('textmate')), [diagnostics]);
+  const logs = useMemo(
+    () => diagnostics.filter((d) => GRAMMAR_RE.test(`${d.tag} ${d.message}`)),
+    [diagnostics],
+  );
   const disabled = settings.textMateDisabledLanguages.length;
   const forced = settings.textMateForceEnabledLanguages.length;
 
@@ -45,8 +55,8 @@ export function TextMateLogbookScreen({ navigation }: Props) {
         ListEmptyComponent={
           <EmptyState
             icon="library-outline"
-            title="Nothing logged yet"
-            body="Grammar load failures and fallbacks appear here while you browse highlighted files and code blocks."
+            title="No grammar diagnostics"
+            body="This list shows diagnostic-log entries that mention grammars, syntax, or highlighting. Nothing matching has been logged in this session."
           />
         }
       />

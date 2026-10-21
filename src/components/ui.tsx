@@ -210,7 +210,7 @@ export function Sheet({ visible, onClose, title, children, full }: {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ justifyContent: 'flex-end' }}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end' }}>
         <View style={{
           backgroundColor: t.colors.background, borderTopLeftRadius: 18, borderTopRightRadius: 18,
           maxHeight: full ? '92%' : '78%', borderColor: t.colors.border, borderWidth: StyleSheet.hairlineWidth,

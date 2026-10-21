@@ -75,15 +75,22 @@ export function HomeScreen({ navigation }: Props) {
     try {
       const next: Record<string, Session[]> = { ...byDir };
       const targets = dirs.length ? dirs : [undefined as any];
+      // The server's active list is authoritative: replace it wholesale on each
+      // load instead of accumulating, so sessions the server stopped reporting
+      // do not stay labelled "Running" forever.
+      const reportedIds = new Set<string>();
+      // One client for the whole load: it caches the global session scan
+      // briefly, so N directories no longer trigger N identical full scans.
+      const client = new ApiClient(active);
       await Promise.all(targets.map(async (dir: string | undefined) => {
-        const client = new ApiClient(active, dir);
         const [list, ids] = await Promise.all([
           client.listSessions(dir),
           client.activeSessions().catch(() => [] as string[]),
         ]);
         next[dir || ''] = list;
-        if (ids.length) setActiveIds((prev) => Array.from(new Set([...prev, ...ids])));
+        for (const id of ids) reportedIds.add(id);
       }));
+      setActiveIds(Array.from(reportedIds));
       setByDir(next);
       cacheSessions(active.id, next);
       logDiag('info', 'home', `loaded ${Object.values(next).flat().length} sessions`);
@@ -105,6 +112,13 @@ export function HomeScreen({ navigation }: Props) {
     }
   }, [active, dirs, byDir, directories, addDirectory, logDiag]);
 
+  // The SSE subscription below must always call the freshest `load`, but its
+  // deps intentionally omit `load` (adding it would resubscribe on every list
+  // change and the callback would still capture a stale closure). Route the
+  // event callbacks through a ref that is kept up to date after each render.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; });
+
   useEffect(() => { load(); }, [active?.id, selected, directories.join('|')]);
 
   useEffect(() => {
@@ -113,9 +127,9 @@ export function HomeScreen({ navigation }: Props) {
     const sub = subscribeEvents(client, (evt) => {
       if (/^(message|session|permission|question)\./.test(evt.type)) {
         if (refreshTimer.current) clearTimeout(refreshTimer.current);
-        refreshTimer.current = setTimeout(() => load(), 700);
+        refreshTimer.current = setTimeout(() => loadRef.current(), 700);
       }
-    }, (status) => { if (status === 'open') load(); });
+    }, (status) => { if (status === 'open') loadRef.current(); });
     return () => { sub.close(); if (refreshTimer.current) clearTimeout(refreshTimer.current); };
   }, [active?.id, selected]);
 
@@ -132,11 +146,12 @@ export function HomeScreen({ navigation }: Props) {
   const running = allSessions.filter((s) => activeIds.includes(s.id) || (s as any).status === 'busy');
   const ready = allSessions.filter((s) => !running.some((r) => r.id === s.id));
   const cutoff = Date.now() - Math.max(1, settings.recentWindowHours) * 3600_000;
-  const recent = ready.filter((s) => {
-    const t = s.time?.updated || s.time?.created || 0;
-    return running.some((r) => r.id === s.id) || t >= cutoff;
-  });
-  const list = selected === 'all' ? [...running, ...recent] : recent;
+  // `ready` already excludes every running session, so the recent window is the
+  // only condition left to test here.
+  const recent = ready.filter((s) => (s.time?.updated || s.time?.created || 0) >= cutoff);
+  // Running sessions render in every view (including a single project chip) so
+  // the "Running · N" header always matches what the list actually shows.
+  const list = [...running, ...recent];
 
   const createSession = async () => {
     if (!active) return;

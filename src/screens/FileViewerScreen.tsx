@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import { useServers } from '../state/servers';
@@ -65,10 +64,10 @@ export function FileViewerScreen({ navigation, route }: Props) {
             <DiffView patch={diff.patch} />
           </ScrollView>
         ) : (
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30 }}>
-            <Ionicons name="git-compare-outline" size={26} color={theme.colors.icon} />
-            <Text style={{ color: theme.colors.textWeak, fontSize: 13, marginTop: 10, textAlign: 'center' }}>No diff is available for this file. Showing the file instead.</Text>
-          </View>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
+            <Text style={{ color: theme.colors.textWeak, fontSize: 13, marginBottom: 10 }}>No diff is available for this file. Showing the file instead.</Text>
+            {content ? <CodeBlock code={content} language={language} showLines /> : <Text style={{ color: theme.colors.textWeak, fontSize: 13 }}>File content is unavailable on this server.</Text>}
+          </ScrollView>
         )
       ) : (
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>

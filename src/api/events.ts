@@ -55,6 +55,20 @@ function unwrap(raw: any, directory?: string, fallbackType?: string): ServerEven
   return { type, properties: payload.properties ?? payload.data ?? {}, directory: payload.directory || directory };
 }
 
+// react-native-sse has no reconnect option: when the stream errors the source
+// stays dead (status ERROR, no re-poll). The app re-opens it itself.
+const RECONNECT_INITIAL_MS = 2000;
+const RECONNECT_MAX_MS = 30000;
+const POLLING_INTERVAL_MS = 5000;
+
+interface Channel {
+  path: string;
+  query: string;
+  source: EventSource | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  backoff: number;
+}
+
 export function subscribeEvents(
   client: ApiClient,
   onEvent: (e: ServerEvent) => void,
@@ -66,42 +80,80 @@ export function subscribeEvents(
   }
   const base = normalizeBaseUrl(client.profile.baseUrl);
   const directory = client.directory || '';
-  const sources: EventSource[] = [];
+  const channels: Channel[] = [];
+  let closed = false;
 
-  const open = (path: string, query: string) => {
-    const es = new EventSource(`${base}${path}${query}` as any, {
+  const handle = (evt: any, fallbackType?: string) => {
+    if (!evt?.data || evt.data === '[DONE]') return;
+    let parsed: any;
+    try { parsed = JSON.parse(evt.data); } catch { return; }
+    const e = unwrap(parsed, directory, fallbackType);
+    if (e) onEvent(e);
+  };
+
+  function closeSource(ch: Channel) {
+    const s = ch.source;
+    ch.source = null;
+    if (!s) return;
+    try { s.removeAllEventListeners(); s.close(); } catch {}
+  }
+
+  function openChannel(ch: Channel) {
+    if (closed) return;
+    const es = new EventSource(`${base}${ch.path}${ch.query}` as any, {
       headers,
-      pollingInterval: 0,
+      pollingInterval: POLLING_INTERVAL_MS,
       lineEndingCharacter: '\n',
     } as any);
-    sources.push(es);
-    es.addEventListener('open' as any, () => onStatus?.('open'));
-    es.addEventListener('error' as any, () => onStatus?.('error'));
-    const handle = (evt: any, fallbackType?: string) => {
-      if (!evt?.data || evt.data === '[DONE]') return;
-      let parsed: any;
-      try { parsed = JSON.parse(evt.data); } catch { return; }
-      const e = unwrap(parsed, directory, fallbackType);
-      if (e) onEvent(e);
-    };
+    ch.source = es;
+    es.addEventListener('open' as any, () => {
+      ch.backoff = RECONNECT_INITIAL_MS;
+      onStatus?.('open');
+    });
+    es.addEventListener('error' as any, () => {
+      onStatus?.('error');
+      scheduleReconnect(ch);
+    });
     es.addEventListener('message' as any, (evt: any) => handle(evt));
     // V2 servers use named SSE events (event: session.next.text.delta).
     for (const type of EVENT_TYPES) es.addEventListener(type as any, (evt: any) => handle(evt, type));
+  }
+
+  function scheduleReconnect(ch: Channel) {
+    if (closed || ch.timer) return;
+    const delay = ch.backoff;
+    ch.backoff = Math.min(ch.backoff * 2, RECONNECT_MAX_MS);
+    ch.timer = setTimeout(() => {
+      ch.timer = null;
+      if (closed) return;
+      // The dead source may have queued its own poll — close it first so the
+      // replacement is the only live connection.
+      closeSource(ch);
+      openChannel(ch);
+    }, delay);
+  }
+
+  const addChannel = (path: string, query: string) => {
+    const ch: Channel = { path, query, source: null, timer: null, backoff: RECONNECT_INITIAL_MS };
+    channels.push(ch);
+    openChannel(ch);
   };
 
   const enc = encodeURIComponent(directory);
   if (client.isV2) {
-    open('api/event', directory ? `?location%5Bdirectory%5D=${enc}` : '');
+    addChannel('api/event', directory ? `?location%5Bdirectory%5D=${enc}` : '');
   } else {
     // Classic servers broadcast globally; per-directory events carry directory scoping.
-    open('global/event', '');
-    if (directory) open('event', `?directory=${enc}`);
+    addChannel('global/event', '');
+    if (directory) addChannel('event', `?directory=${enc}`);
   }
 
   return {
     close: () => {
-      for (const s of sources) {
-        try { s.removeAllEventListeners(); s.close(); } catch {}
+      closed = true;
+      for (const ch of channels) {
+        if (ch.timer) { clearTimeout(ch.timer); ch.timer = null; }
+        closeSource(ch);
       }
       onStatus?.('closed');
     },

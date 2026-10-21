@@ -19,7 +19,9 @@ export function ServersScreen({ navigation }: Props) {
   const test = async (server: ServerProfile) => {
     if (server.id !== active?.id) setActive(server.id);
     setBusy(server.id);
-    const updated = await refreshActive();
+    // Pass the id explicitly: setActive() has not re-rendered yet, so
+    // refreshActive()'s activeId closure still points at the previous server.
+    const updated = await refreshActive(server.id);
     setBusy(null);
     if (updated) Alert.alert('Connected', `${updated.name}\n${updated.baseUrl}\nProtocol ${updated.protocol.toUpperCase()}`);
     else Alert.alert('Connection failed', 'The server did not answer the health check. Check the URL and credentials.');

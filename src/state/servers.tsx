@@ -32,7 +32,7 @@ interface ServersContextValue {
   updateServer: (id: string, input: ServerInput) => Promise<ServerProfile>;
   removeServer: (id: string) => Promise<void>;
   setActive: (id: string) => void;
-  refreshActive: () => Promise<ServerProfile | null>;
+  refreshActive: (id?: string) => Promise<ServerProfile | null>;
   setDirectories: (serverId: string, dirs: string[]) => void;
   addDirectory: (dir: string) => void;
   removeDirectory: (dir: string) => void;
@@ -145,8 +145,11 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
     persist(profiles, id, dirsMap).catch(() => {});
   }, [profiles, dirsMap, persist]);
 
-  const refreshActive = useCallback(async () => {
-    const profile = profiles.find((p) => p.id === activeId) || null;
+  // Optional `id` lets callers health-check a specific profile (e.g. the Test
+  // button on a non-active server) instead of whichever server is active.
+  // With no argument the behaviour is unchanged: refresh the active server.
+  const refreshActive = useCallback(async (id?: string) => {
+    const profile = profiles.find((p) => p.id === (id ?? activeId)) || null;
     if (!profile) return null;
     try {
       const { protocol, info } = await probeServer(profile);

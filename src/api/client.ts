@@ -49,10 +49,17 @@ export interface RequestOptions {
   headers?: Record<string, string>;
 }
 
+// The global session scan walks every page of every session on the server.
+// HomeScreen asks for it once per configured directory, so the result is
+// cached briefly per client instance to avoid N identical full scans.
+const GLOBAL_SCAN_TTL_MS = 2000;
+
 export class ApiClient {
   profile: ServerProfile;
   protocol: Protocol;
   directory?: string;
+  private globalCache?: { at: number; sessions: Session[] };
+  private globalPending?: { at: number; promise: Promise<Session[]> };
 
   constructor(profile: ServerProfile, directory?: string) {
     this.profile = profile;
@@ -75,6 +82,25 @@ export class ApiClient {
   url(path: string, query?: Query): string {
     const base = normalizeBaseUrl(this.profile.baseUrl);
     return `${base}${path.replace(/^\/+/, '')}${buildQuery(query)}`;
+  }
+
+  // A route that does not exist answers 404/405/501 — or, on v2 servers that
+  // fall back to the SPA, 200 with an HTML document ("Not a JSON endpoint").
+  // Only those mean "this build has no such route"; every other status is a
+  // real error and must not be swallowed by a fallback.
+  private isRouteMissing(e: unknown): boolean {
+    if (!(e instanceof ApiError)) return false;
+    if (e.status === 404 || e.status === 405 || e.status === 501) return true;
+    return e.status === 200 && e.body.includes('Not a JSON endpoint');
+  }
+
+  private minimalSession(id: string, input: { title?: string }): Session {
+    return {
+      id,
+      title: input.title || 'Untitled session',
+      directory: this.directory,
+      raw: { id, title: input.title },
+    };
   }
 
   async raw(path: string, opts: RequestOptions = {}): Promise<Response> {
@@ -141,33 +167,57 @@ export class ApiClient {
   }
 
   // ---- sessions ----
+  private async fetchSessionPage(queryDir?: string): Promise<Session[]> {
+    const out: Session[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const res = await this.request<any>('api/session', {
+        query: { directory: queryDir, cursor, parentID: undefined },
+      });
+      const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.sessions ?? [];
+      out.push(...items.map(normalizeSessionV2));
+      const next = res?.cursor?.next ?? res?.nextCursor;
+      cursor = typeof next === 'string' ? next : undefined;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  // The global scan (all locations) is identical for every directory, so it is
+  // cached for a short while. The directory-scoped scan is never cached.
+  private globalSessions(): Promise<Session[]> {
+    const now = Date.now();
+    const cached = this.globalCache;
+    if (cached && now - cached.at < GLOBAL_SCAN_TTL_MS) return Promise.resolve(cached.sessions);
+    const pending = this.globalPending;
+    if (pending && now - pending.at < GLOBAL_SCAN_TTL_MS) return pending.promise;
+    const promise = this.fetchSessionPage(undefined).then(
+      (sessions) => {
+        this.globalCache = { at: Date.now(), sessions };
+        this.globalPending = undefined;
+        return sessions;
+      },
+      (e) => {
+        this.globalPending = undefined;
+        throw e;
+      },
+    );
+    this.globalPending = { at: now, promise };
+    return promise;
+  }
+
   async listSessions(directory?: string): Promise<Session[]> {
     const dir = directory ?? this.directory;
     if (!this.isV2) {
       const list = await this.request<any[]>('session', { query: { directory: dir } });
       return (list || []).map(normalizeSessionV1);
     }
-    const fetchPage = async (queryDir?: string): Promise<Session[]> => {
-      const out: Session[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < 20; page++) {
-        const res = await this.request<any>('api/session', {
-          query: { directory: queryDir, cursor, parentID: undefined },
-        });
-        const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.sessions ?? [];
-        out.push(...items.map(normalizeSessionV2));
-        const next = res?.cursor?.next ?? res?.nextCursor;
-        cursor = typeof next === 'string' ? next : undefined;
-        if (!cursor) break;
-      }
-      return out;
-    };
     // The directory-scoped endpoint returns [] for unknown/stale paths instead
     // of an error, which would blank the whole list. Always fetch the global
     // list (all locations) and filter client-side for the requested directory.
-    const global = await fetchPage(undefined);
+    const global = await this.globalSessions();
     if (!dir) return global;
-    const scoped = await fetchPage(dir).catch(() => [] as Session[]);
+    const scoped = await this.fetchSessionPage(dir).catch(() => [] as Session[]);
     const seen = new Set<string>();
     const out: Session[] = [];
     for (const s of [...scoped, ...global.filter((x) => x.directory === dir)]) {
@@ -208,19 +258,44 @@ export class ApiClient {
   }
 
   async updateSession(id: string, input: { title?: string; archived?: boolean; time?: any }): Promise<Session> {
-    // v2 has no PATCH /api/session/:id (it serves the SPA HTML); the v1 compat
-    // route handles renames on both server generations.
+    if (this.isV2) {
+      // The spec route only accepts title/metadata/permissions/archived.
+      const v2Body: any = {};
+      if (input.title !== undefined) v2Body.title = input.title;
+      if (input.archived !== undefined) v2Body.archived = input.archived;
+      try {
+        const res = await this.request<any>('api/session/' + id, { method: 'PATCH', body: v2Body });
+        // A successful PATCH answers 204 (no body) — re-read the session so
+        // the caller sees the new title instead of nothing.
+        if (res === undefined || res === null) {
+          return await this.getSession(id).catch(() => this.minimalSession(id, input));
+        }
+        return normalizeSessionV2(res?.data ?? res);
+      } catch (e) {
+        // Route absent on this build — fall back to the v1 compat route.
+        if (!this.isRouteMissing(e)) throw e;
+      }
+    }
     const body: any = {};
     if (input.title !== undefined) body.title = input.title;
     if (input.archived !== undefined) body.archived = input.archived;
     if (input.time !== undefined) body.time = input.time;
-    return normalizeSessionV1(await this.request('session/' + id, {
+    const res = await this.request('session/' + id, {
       method: 'PATCH', query: { directory: this.directory }, body,
-    }));
+    });
+    return res ? normalizeSessionV1(res) : this.minimalSession(id, input);
   }
 
   async deleteSession(id: string): Promise<void> {
-    // v2 has no DELETE /api/session/:id; the v1 compat route works on both.
+    if (this.isV2) {
+      try {
+        await this.request('api/session/' + id, { method: 'DELETE' });
+        return;
+      } catch (e) {
+        // Route absent on this build — fall back to the v1 compat route.
+        if (!this.isRouteMissing(e)) throw e;
+      }
+    }
     await this.request('session/' + id, { method: 'DELETE', query: { directory: this.directory } });
   }
 
@@ -234,19 +309,31 @@ export class ApiClient {
     }
     // v2 /api/session/:id/message only serves messages stored in the new format;
     // sessions created before the storage migration are readable only through
-    // the v1 endpoint (and new-format sessions return [] on v1). Fetch both and
-    // merge so history always loads regardless of which storage a session uses.
-    const [v2res, v1res] = await Promise.allSettled([
-      this.request<any>('api/session/' + sessionID + '/message', { query: { limit, order: 'desc' } }),
-      this.request<any[]>('session/' + sessionID + '/message', {
-        query: { directory: this.directory, limit: 1000 },
-      }),
-    ]);
-    if (v2res.status === 'rejected' && v1res.status === 'rejected') throw v2res.reason;
-    const v2items = v2res.status === 'fulfilled'
-      ? (Array.isArray(v2res.value) ? v2res.value : v2res.value?.data ?? v2res.value?.items ?? v2res.value?.messages ?? [])
-      : [];
-    const v1items = v1res.status === 'fulfilled' ? (Array.isArray(v1res.value) ? v1res.value : []) : [];
+    // the v1 endpoint (and new-format sessions return [] on v1). Ask v2 first
+    // and only fall back to the legacy route when it yields nothing, so the
+    // expensive legacy request is not paid for on every load.
+    let v2items: any[] = [];
+    let v2error: unknown = null;
+    try {
+      const res = await this.request<any>('api/session/' + sessionID + '/message', { query: { limit, order: 'desc' } });
+      const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.messages ?? [];
+      v2items = Array.isArray(items) ? items : [];
+    } catch (e) {
+      v2error = e;
+    }
+    let v1items: any[] = [];
+    let v1error: unknown = null;
+    if (v2items.length === 0) {
+      try {
+        const res = await this.request<any[]>('session/' + sessionID + '/message', {
+          query: { directory: this.directory, limit: 1000 },
+        });
+        v1items = Array.isArray(res) ? res : [];
+      } catch (e) {
+        v1error = e;
+      }
+    }
+    if (v2error && v1error) throw v2error;
     const merged = new Map<string, ChatMessage>();
     for (const m of v2items) {
       const n = normalizeMessageV2(m, sessionID);
@@ -287,29 +374,20 @@ export class ApiClient {
       });
     }
     const files = (input.files || []).map((f) => ({ uri: f.dataUrl || f.uri, name: f.name }));
-    const promptInput = {
-      text: input.text,
-      files,
-      agents: input.agents?.length ? input.agents : undefined,
-    };
+    const agents = input.agents?.length ? input.agents : undefined;
+    const delivery = input.delivery ? { delivery: input.delivery } : {};
     try {
-      // v2 requires the wrapped shape { prompt: PromptInput, delivery } — the
-      // flat shape is rejected with 400 Missing key ["prompt"].
+      // The spec body is flat: { text, files, agents, ...delivery }.
       return await this.request('api/session/' + sessionID + '/prompt', {
         method: 'POST',
-        body: { prompt: promptInput, ...(input.delivery ? { delivery: input.delivery } : {}) },
+        body: { text: input.text, files, agents, ...delivery },
       });
     } catch (e) {
-      // Some v2 builds accept the flat shape instead.
+      // Builds that expect the wrapped shape { prompt: {...}, delivery }.
       if (e instanceof ApiError && e.status === 400) {
         return await this.request('api/session/' + sessionID + '/prompt', {
           method: 'POST',
-          body: {
-            text: input.text,
-            files,
-            agents: input.agents?.length ? input.agents : undefined,
-            ...(input.delivery ? { delivery: input.delivery } : {}),
-          },
+          body: { prompt: { text: input.text, files, agents }, ...delivery },
         });
       }
       throw e;
@@ -354,11 +432,23 @@ export class ApiClient {
   }
 
   async fork(id: string, messageID?: string): Promise<Session> {
-    // v2 has no /api/session/:id/fork; the v1 compat route exists on both and
-    // copies history up to messageID.
-    return normalizeSessionV1(await this.request('session/' + id + '/fork', {
+    if (this.isV2) {
+      try {
+        // The spec body prop is "before" (the message to fork from).
+        const res = await this.request<any>('api/session/' + id + '/fork', {
+          method: 'POST',
+          body: messageID ? { before: messageID } : {},
+        });
+        return normalizeSessionV2(res?.data ?? res);
+      } catch (e) {
+        // Route absent on this build — fall back to the v1 compat route.
+        if (!this.isRouteMissing(e)) throw e;
+      }
+    }
+    const res = await this.request('session/' + id + '/fork', {
       method: 'POST', query: { directory: this.directory }, body: messageID ? { messageID } : {},
-    }));
+    });
+    return res ? normalizeSessionV1(res) : this.minimalSession(id, {});
   }
 
   async revert(id: string, messageID: string, partID?: string): Promise<any> {
@@ -376,12 +466,22 @@ export class ApiClient {
 
   async unrevert(id: string): Promise<any> {
     if (!this.isV2) {
-      return this.request('session/' + id + '/unrevert', {
-        method: 'POST', query: { directory: this.directory },
-      });
+      try {
+        return await this.request('session/' + id + '/unrevert', {
+          method: 'POST', query: { directory: this.directory },
+        });
+      } catch (e) {
+        // Some v1 builds only expose the spec DELETE route.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+          return this.request('session/' + id + '/revert', {
+            method: 'DELETE', query: { directory: this.directory },
+          });
+        }
+        throw e;
+      }
     }
-    // clear cancels a staged (not yet committed) revert.
-    return this.request('api/session/' + id + '/revert/clear', { method: 'POST' });
+    // v2 clears a staged revert with DELETE /api/session/:id/revert.
+    return this.request('api/session/' + id + '/revert', { method: 'DELETE' });
   }
 
   async summarize(id: string, model?: ModelRef): Promise<any> {
@@ -393,7 +493,16 @@ export class ApiClient {
   }
 
   async compact(id: string): Promise<any> {
-    return this.request('api/session/' + id + '/compact', { method: 'POST' });
+    // The request body is required (it may be empty).
+    if (this.isV2) {
+      try {
+        return await this.request('api/session/' + id + '/compact', { method: 'POST', body: {} });
+      } catch (e) {
+        // Route absent on this build — fall back to the v1 compat route.
+        if (!this.isRouteMissing(e)) throw e;
+      }
+    }
+    return this.request('session/' + id + '/compact', { method: 'POST', body: {} });
   }
 
   // ---- prompts / inbox ----
@@ -564,9 +673,9 @@ export class ApiClient {
   }
 
   async vcsDiff(mode?: string, context?: number): Promise<FileDiff[]> {
-    // The diff API only accepts mode "git" | "branch"; UI modes like "working"
-    // map to "git" (working-tree diff).
-    const m = mode === 'branch' ? 'branch' : 'git';
+    // The diff API only accepts mode "working" | "branch" | "committed"; UI
+    // modes like "working" map to the working-tree diff.
+    const m = mode === 'branch' ? 'branch' : 'working';
     if (!this.isV2) {
       return (await this.request<FileDiff[]>('vcs/diff', {
         query: { directory: this.directory, mode: m, context },
@@ -694,8 +803,9 @@ export class ApiClient {
   async forms(): Promise<FormInfo[]> {
     if (!this.isV2) return [];
     try {
-      const res = await this.request<any>('api/form/request', { query: { 'location[directory]': this.directory } });
-      return res?.data ?? res?.items ?? res ?? [];
+      const res = await this.request<any>('api/form', { query: { 'location[directory]': this.directory } });
+      const items = res?.data ?? res?.items ?? res ?? [];
+      return (Array.isArray(items) ? items : []) as FormInfo[];
     } catch {
       return []; // route absent on some v2 builds
     }

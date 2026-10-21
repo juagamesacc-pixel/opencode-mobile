@@ -104,7 +104,10 @@ export function TerminalScreen({ navigation, route }: Props) {
         foreground: theme.colors.text,
         cursor: theme.colors.text,
         selectionBackground: theme.colors.surfaceInteractive,
-        black: theme.colors.background,
+        // ANSI black must not be the background colour: output using colour 30
+        // would otherwise be painted in exactly the page background (invisible
+        // in both light and dark mode).
+        black: theme.colors.textWeak,
         brightBlack: theme.colors.textWeak,
         white: theme.colors.text,
         brightWhite: theme.colors.text,

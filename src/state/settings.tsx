@@ -98,6 +98,11 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => setReady(true));
   }, []);
 
+  // Do not let a debounced save fire after the provider unmounts.
+  useEffect(() => () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+  }, []);
+
   const persist = useCallback((next: Settings) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -114,6 +119,12 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, [persist]);
 
   const reset = useCallback(async () => {
+    // Cancel the debounced write first: a pending save scheduled just before
+    // the reset would otherwise land afterwards and restore the old settings.
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
     await AsyncStorage.removeItem(STORAGE_KEY);
     setSettings(DEFAULT_SETTINGS);
   }, []);

@@ -99,6 +99,14 @@ export function ChatScreen({ navigation, route }: Props) {
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const refreshTimer = useRef<any>(null);
   const currentSession = useRef<string>(sessionId);
+  // Guards timers scheduled after an await: the effect cleanup only clears
+  // timers that existed when it ran, so a timer created after unmount would
+  // otherwise still fire. The body keeps StrictMode's remount cycle correct.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const scrollToEnd = useCallback((animated = true) => {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated }));
@@ -204,6 +212,13 @@ export function ChatScreen({ navigation, route }: Props) {
 
   const refresh = useCallback(async (spin = false) => {
     if (!client) return;
+    // Snapshot the session this refresh was issued for. After every await we
+    // re-check it against the ref the SSE handler uses: if the user switched
+    // sessions in the meantime, this response belongs to a screen that is no
+    // longer showing it and must not write state (messages, title, the
+    // permission/question sheets, loading flags).
+    const forSession = sessionId;
+    const stillCurrent = () => currentSession.current === forSession;
     if (spin) setRefreshing(true);
     try {
       const [sess, msgs, perms, questions, forms, inb] = await Promise.all([
@@ -214,6 +229,7 @@ export function ChatScreen({ navigation, route }: Props) {
         client.forms().catch(() => []),
         client.inbox(sessionId).catch(() => []),
       ]);
+      if (!stillCurrent()) return;
       if (sess) {
         setSession(sess);
         if (!route.params.title) navigation.setParams({ title: sess.title, parentId: sess.parentID });
@@ -234,16 +250,20 @@ export function ChatScreen({ navigation, route }: Props) {
       setForm(forms.find((f) => !f.sessionID || f.sessionID === sessionId) || null);
       setInbox(inb || []);
       setStreaming(msgs.some((m) => m.pending));
-      if (sess && active) client.todos(sessionId).then(setTodos).catch(() => {});
-      if (sess && active) client.childSessions(sessionId).then(setChildren).catch(() => {});
+      // These resolve later than the guard above, so re-check per callback.
+      if (sess && active) client.todos(sessionId).then((t) => { if (stillCurrent()) setTodos(t); }).catch(() => {});
+      if (sess && active) client.childSessions(sessionId).then((ch) => { if (stillCurrent()) setChildren(ch); }).catch(() => {});
       setError(null);
     } catch (e) {
+      if (!stillCurrent()) return;
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
       logDiag('error', 'chat', msg);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (stillCurrent()) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [client, sessionId, active, route.params.title, navigation, logDiag]);
 
@@ -553,7 +573,13 @@ export function ChatScreen({ navigation, route }: Props) {
         delivery: delivery || (streaming || inbox.length ? settings.followUpDelivery : undefined),
       });
       if (selectedAgent && client.isV2) client.selectAgent(sessionId, selectedAgent).catch(() => {});
-      setTimeout(() => refresh(), 350);
+      // Tracked so a new send replaces any pending refresh and the effect
+      // cleanup clears it on unmount (an untracked timer would refresh a dead
+      // screen and call navigation.setParams on a dead route).
+      if (mounted.current) {
+        if (refreshTimer.current) clearTimeout(refreshTimer.current);
+        refreshTimer.current = setTimeout(() => refresh(), 350);
+      }
     } catch (e) {
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(e instanceof Error ? e.message : String(e));
@@ -616,7 +642,13 @@ export function ChatScreen({ navigation, route }: Props) {
     if (!client || !question) return;
     const all = answers.slice();
     if (!all[questionIndex]) all[questionIndex] = [];
-    if (currentQuestion?.custom && customOn && custom.trim()) all[questionIndex] = [...all[questionIndex], custom.trim()];
+    if (currentQuestion?.custom !== false && customOn && custom.trim()) {
+      // Single-select: a custom answer replaces the picked option instead of
+      // being sent alongside it (the server expects exactly one answer).
+      all[questionIndex] = currentQuestion?.multiple
+        ? [...all[questionIndex], custom.trim()]
+        : [custom.trim()];
+    }
     try {
       await client.replyQuestion(question.sessionID || sessionId, question.id, all);
       setQuestion(null); setQuestionIndex(0); setAnswers([]); setCustom(''); setCustomOn(false);
@@ -631,9 +663,23 @@ export function ChatScreen({ navigation, route }: Props) {
     if (currentQuestion?.multiple) {
       all[questionIndex] = cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label];
     } else {
+      // Single-select and "Something else" are mutually exclusive.
       all[questionIndex] = [label];
+      if (customOn) { setCustomOn(false); setCustom(''); }
     }
     setAnswers(all);
+  };
+
+  const toggleCustom = () => {
+    const next = !customOn;
+    setCustomOn(next);
+    // Single-select: choosing the custom answer clears the picked option.
+    if (next && !currentQuestion?.multiple) setAnswers((prev) => {
+      const all = prev.slice();
+      all[questionIndex] = [];
+      return all;
+    });
+    if (!next) setCustom('');
   };
 
   const revert = (m: ChatMessage) => {
@@ -691,8 +737,15 @@ export function ChatScreen({ navigation, route }: Props) {
   const additions = session?.summary?.additions || 0;
   const deletions = session?.summary?.deletions || 0;
   const tokenTotal = (session?.tokens?.input || 0) + (session?.tokens?.output || 0) + (session?.tokens?.reasoning || 0);
+  // Single source of truth for what the FlatList renders: renderItem and the
+  // timeline chips must index into this array, never into the raw `messages`
+  // (indices into the unfiltered list can exceed the rendered data length).
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => m.parts.length > 0 || m.pending || m.error),
+    [messages],
+  );
   const showChipTimeline = settings.featureFlags.session_chat_chip_timeline && settings.chipTimeline && messages.length > 2;
-  const userChips = messages.filter((m) => m.role === 'user').slice(-8);
+  const userChips = visibleMessages.filter((m) => m.role === 'user').slice(-8);
 
   if (!active) {
     return <Screen><Loading label="No server selected" /></Screen>;
@@ -725,7 +778,7 @@ export function ChatScreen({ navigation, route }: Props) {
       {loading && !messages.length ? <Loading label="Loading conversation…" /> : (
         <FlatList
           ref={listRef}
-          data={messages.filter((m) => m.parts.length > 0 || m.pending || m.error)}
+          data={visibleMessages}
           keyExtractor={(m) => m.id}
           style={{ flex: 1 }}
           contentContainerStyle={{ paddingTop: 8, paddingBottom: 14, flexGrow: 1 }}
@@ -735,8 +788,9 @@ export function ChatScreen({ navigation, route }: Props) {
           }}
           scrollEventThrottle={100}
           onContentSizeChange={() => { if (atBottom) scrollToEnd(false); }}
+          onScrollToIndexFailed={() => listRef.current?.scrollToEnd({ animated: false })}
           renderItem={({ item, index }) => {
-            const prev = messages[index - 1];
+            const prev = visibleMessages[index - 1];
             const compact = prev && item.role === 'assistant' && prev.role === 'assistant' && settings.collapseConsecutiveToolCalls;
             return (
               <MessageView
@@ -797,7 +851,7 @@ export function ChatScreen({ navigation, route }: Props) {
                 const text = m.parts.find((p) => p.type === 'text')?.text || '';
                 return (
                   <Pressable key={m.id} onPress={() => {
-                    const idx = messages.findIndex((x) => x.id === m.id);
+                    const idx = visibleMessages.findIndex((x) => x.id === m.id);
                     if (idx >= 0) listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.3 });
                   }} style={[styles.timelineChip, { backgroundColor: c.surfaceRaised, borderColor: c.borderWeaker }]}>
                     <Text numberOfLines={1} style={{ color: c.textWeak, fontSize: 11, maxWidth: 160 }}>{clockTime(m.created)} · {text.slice(0, 48) || 'Message'}</Text>
@@ -915,7 +969,7 @@ export function ChatScreen({ navigation, route }: Props) {
                 );
               })}
               {currentQuestion.custom !== false ? (
-                <Pressable onPress={() => setCustomOn((v) => !v)} style={[styles.option, { borderColor: customOn ? c.textInteractive : c.border, backgroundColor: c.surfaceRaised }]}>
+                <Pressable onPress={toggleCustom} style={[styles.option, { borderColor: customOn ? c.textInteractive : c.border, backgroundColor: c.surfaceRaised }]}>
                   <Ionicons name={customOn ? 'checkbox' : 'square-outline'} size={17} color={customOn ? c.textInteractive : c.textWeaker} />
                   <Text style={{ color: c.text, fontSize: 14 }}>Something else</Text>
                 </Pressable>

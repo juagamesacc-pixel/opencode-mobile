@@ -24,6 +24,18 @@ function normalizeToolState(state: any, part: any): ToolState | undefined {
   };
 }
 
+// A shell message reports "running" | "exited" | "timeout" | "killed"; the app
+// models tool state as pending/running/streaming/completed/error.
+function shellStatus(status: unknown): ToolState['status'] {
+  switch (status) {
+    case 'running': return 'running';
+    case 'exited': return 'completed';
+    case 'timeout':
+    case 'killed': return 'error';
+    default: return 'running';
+  }
+}
+
 export function stringify(value: any): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === 'string') return value;
@@ -112,9 +124,14 @@ export function normalizeMessageV2(m: any, sessionID: string): ChatMessage {
     parts.push({ id: `${m.id}:agent:${a.name}`, type: 'agent', agent: a.name, raw: a });
   }
   if (type === 'shell' && m?.command) {
+    // The spec wraps the shell output in an object: { output, cursor, size, truncated }.
+    const rawOutput = m.output;
+    const output = typeof rawOutput === 'string'
+      ? rawOutput
+      : (rawOutput && typeof rawOutput.output === 'string' ? rawOutput.output : '');
     parts = [
       { id: `${m.id}:text:0`, type: 'text', text: `$ ${m.command}` },
-      ...(m.output ? [{ id: `${m.id}:tool`, type: 'tool' as PartType, tool: 'bash', state: { status: m.status, output: m.output } }] : []),
+      ...(rawOutput ? [{ id: `${m.id}:tool`, type: 'tool' as PartType, tool: 'bash', state: { status: shellStatus(m.status), output } }] : []),
     ];
   }
   if (type === 'compaction') {
