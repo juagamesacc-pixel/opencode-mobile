@@ -14,7 +14,7 @@
       }
     },
     "android": {
-      "package": "dev.opencode.mobile",
+      "package": "com.opencodemobile.client",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
