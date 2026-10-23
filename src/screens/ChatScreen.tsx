@@ -341,6 +341,17 @@ export function ChatScreen({ navigation, route }: Props) {
     const sub = subscribeEvents(client, (evt) => {
       if (currentSession.current !== sessionId) return;
       const props = evt.properties || {};
+      // Event streams are global, not per-session: v2 `/api/event` is
+      // directory-scoped at best and v1 `global/event` carries every project.
+      // Session-scoped events always name their session in `properties`
+      // (verified against a live server: `{sessionID, assistantMessageID, ...}`
+      // for session.next.*), so drop events that positively belong to another
+      // session. Without this, background output from session B could create
+      // streaming placeholders and append text/tool parts inside session A.
+      // Connection/catalog events carry no session id and pass through.
+      const evtSession = props.sessionID ?? props.info?.sessionID
+        ?? props.part?.sessionID ?? props.message?.sessionID;
+      if (evtSession && evtSession !== sessionId) return;
       switch (evt.type) {
         case 'message.updated': {
           const info = props.info || props.message || props;
@@ -367,7 +378,6 @@ export function ChatScreen({ navigation, route }: Props) {
           break;
         }
         case 'message.part.delta': {
-          if (props.messageID !== undefined && props.messageID !== sessionId && props.sessionID && props.sessionID !== sessionId) return;
           applyDeltaProps(props);
           break;
         }

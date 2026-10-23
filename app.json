@@ -10,7 +10,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "dev.opencode.mobile",
       "infoPlist": {
-        "NSCameraUsageDescription": "Scan the pairing QR code from your opencode server."
+        "NSCameraUsageDescription": "Scan the pairing QR code from your opencode server.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
       }
     },
     "android": {

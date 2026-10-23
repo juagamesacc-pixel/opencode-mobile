@@ -103,7 +103,10 @@ export class ApiClient {
     };
   }
 
-  async raw(path: string, opts: RequestOptions = {}): Promise<Response> {
+  // One request lifecycle: the abort timer covers the response body too.
+  // Clearing it when the headers arrive would leave a stalled body hanging
+  // past its deadline (a loading spinner that never resolves).
+  private async fetchText(path: string, opts: RequestOptions = {}): Promise<{ res: Response; text: string }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 30000);
     const onAbort = () => controller.abort();
@@ -121,7 +124,8 @@ export class ApiClient {
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
         signal: controller.signal,
       });
-      return res;
+      const text = await res.text();
+      return { res, text };
     } finally {
       clearTimeout(timeout);
       opts.signal?.removeEventListener('abort', onAbort);
@@ -129,8 +133,7 @@ export class ApiClient {
   }
 
   async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-    const res = await this.raw(path, opts);
-    const text = await res.text();
+    const { res, text } = await this.fetchText(path, opts);
     if (!res.ok) throw new ApiError(res.status, text);
     if (!text) return undefined as T;
     const contentType = res.headers.get('content-type') || '';
@@ -752,8 +755,7 @@ export class ApiClient {
 
   async readFile(path: string): Promise<string> {
     if (!this.isV2) {
-      const res = await this.raw('file', { query: { path, directory: this.directory } });
-      const text = await res.text();
+      const { res, text } = await this.fetchText('file', { query: { path, directory: this.directory } });
       if (!res.ok) throw new ApiError(res.status, text);
       try {
         const parsed = JSON.parse(text);
@@ -761,10 +763,9 @@ export class ApiClient {
       } catch { return text; }
     }
     const encoded = path.split('/').map(encodeURIComponent).join('/');
-    const res = await this.raw(`api/fs/read/${encoded}`, {
+    const { res, text } = await this.fetchText(`api/fs/read/${encoded}`, {
       query: { 'location[directory]': this.directory },
     });
-    const text = await res.text();
     if (!res.ok) throw new ApiError(res.status, text);
     return text;
   }
@@ -915,9 +916,11 @@ export class ApiClient {
     let headers: Record<string, string> = {};
     if (this.profile.password) {
       const token = encodeBase64(`${this.profile.username || 'opencode'}:${this.profile.password}`);
-      // The original client passes auth_token as a query param on both server
-      // generations (WS handshakes cannot always set headers).
-      params.set('auth_token', token);
+      // The handshake authenticates with the Basic header. The legacy
+      // auth_token query param exists for sockets that cannot send headers;
+      // with a single-use ticket present it is unnecessary, and keeping the
+      // reusable credential out of URLs avoids proxy/server-log exposure.
+      if (!ticket) params.set('auth_token', token);
       headers = { Authorization: `Basic ${token}` };
     }
     return {

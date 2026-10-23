@@ -92,7 +92,16 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
     const { protocol } = await probeServer(probeProfile);
     const profile: ServerProfile = { ...probeProfile, protocol };
     const hydratedPassword = input.password;
-    if (hydratedPassword) await SecureStore.setItemAsync(secretKey(profile.id), hydratedPassword).catch(() => {});
+    if (hydratedPassword) {
+      // A password that cannot be persisted securely must fail the save: the
+      // profile is written without it, so reporting success would silently
+      // produce an unauthenticated server after the next app restart.
+      try {
+        await SecureStore.setItemAsync(secretKey(profile.id), hydratedPassword);
+      } catch {
+        throw new Error('The password could not be saved in this device\'s secure storage, so the server was not added. Try again, or add it without a password.');
+      }
+    }
     const nextProfiles = [...profiles, { ...profile, password: hydratedPassword }];
     const nextActive = activeId || profile.id;
     setProfiles(nextProfiles);
@@ -114,8 +123,15 @@ export function ServersProvider({ children }: { children: React.ReactNode }) {
       ...existing, name: input.name || baseUrl, baseUrl,
       username: input.username || 'opencode', password: input.password, protocol,
     };
-    if (input.password) await SecureStore.setItemAsync(secretKey(id), input.password).catch(() => {});
-    else await SecureStore.deleteItemAsync(secretKey(id)).catch(() => {});
+    if (input.password) {
+      try {
+        await SecureStore.setItemAsync(secretKey(id), input.password);
+      } catch {
+        throw new Error('The new password could not be saved in this device\'s secure storage; the server settings were left unchanged.');
+      }
+    } else {
+      await SecureStore.deleteItemAsync(secretKey(id)).catch(() => {});
+    }
     const nextProfiles = profiles.map((p) => (p.id === id ? updated : p));
     setProfiles(nextProfiles);
     await persist(nextProfiles, activeId, dirsMap);
