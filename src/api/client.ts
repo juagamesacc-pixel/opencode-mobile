@@ -317,20 +317,26 @@ export class ApiClient {
       return (list || []).map((m) => normalizeMessageV1(m, sessionID))
         .sort((a, b) => (a.created || 0) - (b.created || 0));
     }
-    // v2 /api/session/:id/message only serves messages stored in the new format;
-    // sessions created before the storage migration are readable only through
-    // the v1 endpoint (and new-format sessions return [] on v1). Ask v2 first
-    // and only fall back to the legacy route when it yields nothing, so the
-    // expensive legacy request is not paid for on every load.
+    // v2 /api/session/:id/message only serves messages stored in the new
+    // format; sessions created before a storage migration are readable only
+    // through the legacy route — and a session that straddles a migration can
+    // have messages in BOTH stores, so both listings are always fetched and
+    // merged (legacy v1 caps at 1000 and is merged last, filling only the
+    // message ids v2 did not already provide).
     //
     // The v2 route is cursor-paginated: the response carries { data, cursor }.
-    // A single page caps at the requested limit, so long sessions (thousands of
-    // messages) need the cursor followed to retrieve full history — the
+    // A page cap applies to the requested limit, so long sessions (thousands
+    // of messages) need the cursor followed to retrieve full history — the
     // original desktop/web UI pages through everything and so do we. The
     // continuation request must carry ONLY the cursor ("do not combine with
-    // order"). The cursor.next value is never a reliable "more pages" signal
-    // (it is also emitted on the last page), so paging stops on an empty page
-    // — defensive caps below keep a misbehaving server from looping forever.
+    // order"). There is no safe early stop: a server may serve short pages
+    // under its own size limits while additional pages remain, so paging
+    // continues until an empty page (or the cursor repeats — the strongest
+    // loop guard a misbehaving server can leave us). Duplicate ids across
+    // pages are deduplicated by the map merge below.
+    const legacyPromise = this.request<any[]>('session/' + sessionID + '/message', {
+      query: { directory: this.directory, limit: Math.max(limit, 1000) },
+    }).catch((e) => ({ __legacyError: e }));
     let v2items: any[] = [];
     let v2error: unknown = null;
     try {
@@ -344,38 +350,32 @@ export class ApiClient {
         const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.messages ?? [];
         const pageItems = Array.isArray(items) ? items : [];
         v2items.push(...pageItems);
+        const previous: string | null = cursor;
         cursor = res?.cursor?.next ?? null;
-        if (pageItems.length === 0 || !cursor) break;
-        // A short page means the timeline is exhausted; saves a wasted round trip.
-        if (pageItems.length < PAGE) break;
+        // Empty page = exhausted; a repeated cursor would loop forever.
+        if (pageItems.length === 0 || !cursor || cursor === previous) break;
       }
     } catch (e) {
-      // Pages fetched before the failure remain in v2items; a fully empty
-      // listing still falls through to the legacy v1 route below.
+      // Pages fetched before the failure remain in v2items and merge with the
+      // legacy listing below.
       v2error = e;
+    }
+    if (v2error && !v2items.length) {
+      // No v2 content at all and the pump failed — the legacy result decides
+      // whether the caller sees history or the original v2 error.
+      const legacy = await legacyPromise;
+      const items = Array.isArray(legacy) ? legacy : [];
+      if (!items.length) throw v2error;
+      return items.map((m) => normalizeMessageV1(m, sessionID))
+        .sort((a, b) => (a.created || 0) - (b.created || 0));
     }
     const merged = new Map<string, ChatMessage>();
     for (const m of v2items) {
       const n = normalizeMessageV2(m, sessionID);
       if (n.id) merged.set(n.id, n);
     }
-    // Legacy fallback: the v2 routes only exist on newer builds (and only
-    // serve migrated/new-format messages there), so anything that parses to
-    // zero messages — empty listing, older shape, failed fetch — falls back
-    // to the classic v1 session message route.
-    let v1items: any[] = [];
-    let v1error: unknown = null;
-    if (merged.size === 0) {
-      try {
-        const res = await this.request<any[]>('session/' + sessionID + '/message', {
-          query: { directory: this.directory, limit: 1000 },
-        });
-        v1items = Array.isArray(res) ? res : [];
-      } catch (e) {
-        v1error = e;
-      }
-    }
-    if (v2error && v1error) throw v2error;
+    const legacy = await legacyPromise;
+    const v1items = Array.isArray(legacy) ? legacy : [];
     for (const m of v1items) {
       const n = normalizeMessageV1(m, sessionID);
       if (n.id && !merged.has(n.id)) merged.set(n.id, n);
