@@ -319,18 +319,50 @@ export class ApiClient {
     // the v1 endpoint (and new-format sessions return [] on v1). Ask v2 first
     // and only fall back to the legacy route when it yields nothing, so the
     // expensive legacy request is not paid for on every load.
+    //
+    // The v2 route is cursor-paginated: the response carries { data, cursor }.
+    // A single page caps at the requested limit, so long sessions (thousands of
+    // messages) need the cursor followed to retrieve full history — the
+    // original desktop/web UI pages through everything and so do we. The
+    // continuation request must carry ONLY the cursor ("do not combine with
+    // order"). The cursor.next value is never a reliable "more pages" signal
+    // (it is also emitted on the last page), so paging stops on an empty page
+    // — defensive caps below keep a misbehaving server from looping forever.
     let v2items: any[] = [];
     let v2error: unknown = null;
     try {
-      const res = await this.request<any>('api/session/' + sessionID + '/message', { query: { limit, order: 'desc' } });
-      const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.messages ?? [];
-      v2items = Array.isArray(items) ? items : [];
+      const PAGE = Math.min(Math.max(limit, 200), 1000);
+      const MAX_PAGES = 40; // 40 pages of 200+ -> deep-history sessions stay bounded
+      let cursor: string | null = null;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const res: any = await this.request<any>('api/session/' + sessionID + '/message', {
+          query: cursor ? { cursor } : { limit: PAGE, order: 'desc' },
+        });
+        const items = Array.isArray(res) ? res : res?.data ?? res?.items ?? res?.messages ?? [];
+        const pageItems = Array.isArray(items) ? items : [];
+        v2items.push(...pageItems);
+        cursor = res?.cursor?.next ?? null;
+        if (pageItems.length === 0 || !cursor) break;
+        // A short page means the timeline is exhausted; saves a wasted round trip.
+        if (pageItems.length < PAGE) break;
+      }
     } catch (e) {
+      // Pages fetched before the failure remain in v2items; a fully empty
+      // listing still falls through to the legacy v1 route below.
       v2error = e;
     }
+    const merged = new Map<string, ChatMessage>();
+    for (const m of v2items) {
+      const n = normalizeMessageV2(m, sessionID);
+      if (n.id) merged.set(n.id, n);
+    }
+    // Legacy fallback: the v2 routes only exist on newer builds (and only
+    // serve migrated/new-format messages there), so anything that parses to
+    // zero messages — empty listing, older shape, failed fetch — falls back
+    // to the classic v1 session message route.
     let v1items: any[] = [];
     let v1error: unknown = null;
-    if (v2items.length === 0) {
+    if (merged.size === 0) {
       try {
         const res = await this.request<any[]>('session/' + sessionID + '/message', {
           query: { directory: this.directory, limit: 1000 },
@@ -341,11 +373,6 @@ export class ApiClient {
       }
     }
     if (v2error && v1error) throw v2error;
-    const merged = new Map<string, ChatMessage>();
-    for (const m of v2items) {
-      const n = normalizeMessageV2(m, sessionID);
-      if (n.id) merged.set(n.id, n);
-    }
     for (const m of v1items) {
       const n = normalizeMessageV1(m, sessionID);
       if (n.id && !merged.has(n.id)) merged.set(n.id, n);
