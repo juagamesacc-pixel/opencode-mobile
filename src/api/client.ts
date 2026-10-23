@@ -330,10 +330,11 @@ export class ApiClient {
     // original desktop/web UI pages through everything and so do we. The
     // continuation request must carry ONLY the cursor ("do not combine with
     // order"). There is no safe early stop: a server may serve short pages
-    // under its own size limits while additional pages remain, so paging
-    // continues until an empty page (or the cursor repeats — the strongest
-    // loop guard a misbehaving server can leave us). Duplicate ids across
-    // pages are deduplicated by the map merge below.
+    // under its own size limits while additional pages remain. The walk
+    // ends when the cursor envelope is null/blank, repeats itself, or the
+    // hard page cap is hit — an empty page carrying a fresh cursor does NOT
+    // end the walk (identical semantics to the original client's smali).
+    // Duplicate ids across pages are deduplicated by the map merge below.
     const legacyPromise = this.request<any[]>('session/' + sessionID + '/message', {
       query: { directory: this.directory, limit: Math.max(limit, 1000) },
     }).catch((e) => ({ __legacyError: e }));
@@ -341,7 +342,7 @@ export class ApiClient {
     let v2error: unknown = null;
     try {
       const PAGE = Math.min(Math.max(limit, 200), 1000);
-      const MAX_PAGES = 40; // 40 pages of 200+ -> deep-history sessions stay bounded
+      const MAX_PAGES = 500; // matches the original client's walk cap
       let cursor: string | null = null;
       for (let page = 0; page < MAX_PAGES; page++) {
         const res: any = await this.request<any>('api/session/' + sessionID + '/message', {
@@ -352,8 +353,9 @@ export class ApiClient {
         v2items.push(...pageItems);
         const previous: string | null = cursor;
         cursor = res?.cursor?.next ?? null;
-        // Empty page = exhausted; a repeated cursor would loop forever.
-        if (pageItems.length === 0 || !cursor || cursor === previous) break;
+        // A blank/repeated cursor would loop forever; a fresh cursor keeps
+        // the walk alive even when this page came back empty.
+        if (!cursor || !cursor.trim() || (previous !== null && cursor === previous)) break;
       }
     } catch (e) {
       // Pages fetched before the failure remain in v2items and merge with the
